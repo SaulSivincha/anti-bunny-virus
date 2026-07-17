@@ -9,3 +9,8 @@ Thumbs.db
 *.o
 anti-bunny-virus
 logs/
+__pycache__/
+simuladores/simulador_fork_bomb
+simuladores/simulador_memoria
+simuladores/simulador_archivo
+tests/test_motor_deteccion

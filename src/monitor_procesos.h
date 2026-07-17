@@ -10,6 +10,6 @@ typedef struct {
     int hijos;
 } ProcesoInfo;
 
-int obtener_procesos(ProcesoInfo* lista, int max_procesos);
+int obtener_procesos(ProcesoInfo *lista, int max_procesos);
 
 #endif

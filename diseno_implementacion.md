@@ -197,8 +197,12 @@ anti-bunny-virus/
 │   └── main.c
 ├── logs/
 │   └── eventos.log
+├── simuladores/
+│   ├── simulador_fork_bomb.c
+│   ├── simulador_memoria.c
+│   └── simulador_archivo.c
 ├── tests/
-│   └── simulador_bunny.c
+│   └── test_motor_deteccion.c
 ├── estado_del_arte/
 ├── Makefile
 ├── estrategia_anti_bunny_virus.md

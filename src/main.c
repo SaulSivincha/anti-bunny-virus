@@ -1,7 +1,6 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <signal.h>
+#include <time.h>
 #include "config.h"
 #include "monitor_procesos.h"
 #include "monitor_recursos.h"
@@ -13,14 +12,17 @@
 volatile sig_atomic_t ejecutar = 1;
 
 // Manejador de señal para capturar Ctrl+C
-void manejar_sigint(int sig) {
+static void manejar_sigint(int sig) {
     (void)sig;
     ejecutar = 0;
 }
 
-int main() {
+int main(void) {
     // Configurar la captura de la señal SIGINT (Ctrl+C)
-    signal(SIGINT, manejar_sigint);
+    struct sigaction accion = {0};
+    accion.sa_handler = manejar_sigint;
+    sigemptyset(&accion.sa_mask);
+    sigaction(SIGINT, &accion, NULL);
 
     // Inicializar subsistemas
     configurar_logger(RUTA_LOG);
@@ -56,7 +58,11 @@ int main() {
         responder(alertas, n_alertas, MODO_RESPUESTA);
 
         // Intervalo definido en el archivo config.h
-        sleep((unsigned int)INTERVALO_MONITOREO);
+        struct timespec espera = {
+            .tv_sec = (time_t)INTERVALO_MONITOREO,
+            .tv_nsec = (long)((INTERVALO_MONITOREO - (time_t)INTERVALO_MONITOREO) * 1000000000.0)
+        };
+        nanosleep(&espera, NULL);
     }
 
     printf("\n[INFO] === Monitoreo finalizado de manera segura (Ctrl+C detectado) ===\n");

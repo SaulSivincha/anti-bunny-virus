@@ -8,6 +8,6 @@ typedef struct {
     float memoria_mb;
 } RecursoInfo;
 
-int obtener_recursos(RecursoInfo* lista, int max_procesos);
+int obtener_recursos(RecursoInfo *lista, int max_procesos);
 
 #endif

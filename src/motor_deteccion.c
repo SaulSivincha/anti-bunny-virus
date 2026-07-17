@@ -16,6 +16,7 @@ int detectar(
     for (int i = 0; i < n_procesos; i++) {
         if (procesos[i].hijos > max_hijos) {
             if (total_alertas < max_alertas) {
+                alertas_out[total_alertas].pid = procesos[i].pid;
                 strcpy(alertas_out[total_alertas].tipo, "procesos");
                 strcpy(alertas_out[total_alertas].descripcion, "Proceso con demasiados hijos");
                 snprintf(alertas_out[total_alertas].evidencia, sizeof(alertas_out[total_alertas].evidencia),
@@ -30,6 +31,7 @@ int detectar(
     for (int i = 0; i < n_recursos; i++) {
         if (recursos[i].memoria_mb > max_memoria_mb || recursos[i].cpu_porcentaje > max_cpu) {
             if (total_alertas < max_alertas) {
+                alertas_out[total_alertas].pid = recursos[i].pid;
                 strcpy(alertas_out[total_alertas].tipo, "recursos");
                 strcpy(alertas_out[total_alertas].descripcion, "Proceso con consumo anormal de recursos");
                 snprintf(alertas_out[total_alertas].evidencia, sizeof(alertas_out[total_alertas].evidencia),
@@ -44,6 +46,7 @@ int detectar(
     for (int i = 0; i < n_archivos; i++) {
         if (archivos[i].crecimiento_mb_s > max_crecimiento) {
             if (total_alertas < max_alertas) {
+                alertas_out[total_alertas].pid = -1;
                 strcpy(alertas_out[total_alertas].tipo, "archivos");
                 strcpy(alertas_out[total_alertas].descripcion, "Archivo con crecimiento acelerado");
                 snprintf(alertas_out[total_alertas].evidencia, sizeof(alertas_out[total_alertas].evidencia),

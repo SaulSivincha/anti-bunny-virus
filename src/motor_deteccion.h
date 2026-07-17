@@ -6,6 +6,7 @@
 #include "monitor_archivos.h"
 
 typedef struct {
+    int pid;
     char tipo[32];
     char descripcion[256];
     char evidencia[512];

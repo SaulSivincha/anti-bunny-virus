@@ -37,6 +37,8 @@ anti-bunny-virus/
 ├── docs/
 │   └── guia_demostracion.md
 ├── estado_del_arte/
+├── tests/
+│   └── test_motor_deteccion.c
 ├── Makefile
 ├── estrategia_anti_bunny_virus.md
 ├── diseno_implementacion.md
