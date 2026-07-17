@@ -1,0 +1,20 @@
+name: calidad
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Obtener repositorio
+        uses: actions/checkout@v4
+
+      - name: Compilar y verificar
+        run: make check

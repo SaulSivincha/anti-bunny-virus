@@ -1,7 +1,9 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Wpedantic -std=c11 -O2 -D_POSIX_C_SOURCE=200809L
+SHELL = /bin/bash
 TARGET = anti-bunny-virus
 SIMULADORES = simuladores/simulador_fork_bomb simuladores/simulador_memoria simuladores/simulador_archivo
+SCRIPTS_VALIDACION = $(wildcard scripts/validacion/*.sh)
 
 SRCS = src/main.c \
        src/monitor_procesos.c \
@@ -32,10 +34,24 @@ tests/test_motor_deteccion: tests/test_motor_deteccion.c src/motor_deteccion.c
 test: tests/test_motor_deteccion
 	./tests/test_motor_deteccion
 
+check-scripts:
+	bash -n $(SCRIPTS_VALIDACION)
+	./scripts/validacion/verificar_politica_contencion.sh
+	./scripts/validacion/validar_resultados.sh
+
+check: all test check-scripts
+
+help:
+	@echo "Objetivos disponibles:"
+	@echo "  make          Compila monitor y simuladores acotados"
+	@echo "  make test     Ejecuta pruebas unitarias"
+	@echo "  make check    Compila y verifica pruebas, scripts y política segura"
+	@echo "  make clean    Elimina artefactos de compilación"
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -f $(OBJS) $(TARGET) $(SIMULADORES) tests/test_motor_deteccion
 
-.PHONY: all clean test
+.PHONY: all clean test check check-scripts help

@@ -8,6 +8,7 @@
 typedef struct {
     int pid;
     int pgid;
+    unsigned long long starttime;
     unsigned int uid;
     int accionable;
     char severidad[16];
