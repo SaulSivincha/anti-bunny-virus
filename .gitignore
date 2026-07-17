@@ -9,6 +9,7 @@ Thumbs.db
 *.o
 anti-bunny-virus
 logs/
+resultados/
 __pycache__/
 simuladores/simulador_fork_bomb
 simuladores/simulador_memoria
