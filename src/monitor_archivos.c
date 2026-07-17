@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "monitor_archivos.h"
 
@@ -56,6 +57,10 @@ static void escanear_directorio(const char *directorio, float intervalo,
             ArchivoInfo *archivo = &lista[*total];
             snprintf(archivo->ruta, sizeof(archivo->ruta), "%s", ruta);
             archivo->tamano_bytes = (long long)datos.st_size;
+            archivo->mtime = datos.st_mtime;
+            archivo->pid_escritor = -1;
+            archivo->pgid_escritor = -1;
+            archivo->atribuido = 0;
             archivo->crecimiento_mb_s = intervalo > 0.0f && archivo->tamano_bytes > anterior
                 ? (float)(archivo->tamano_bytes - anterior) / (1024.0f * 1024.0f * intervalo)
                 : 0.0f;
@@ -64,6 +69,35 @@ static void escanear_directorio(const char *directorio, float intervalo,
         }
     }
     closedir(dir);
+}
+
+void atribuir_archivo(ArchivoInfo *archivo, const ProcesoInfo *procesos, int n_procesos) {
+    if (archivo == NULL || procesos == NULL) return;
+    for (int i = 0; i < n_procesos; ++i) {
+        char directorio[PATH_MAX], enlace[PATH_MAX];
+        DIR *fds;
+        struct dirent *fd;
+        snprintf(directorio, sizeof(directorio), "/proc/%d/fd", procesos[i].pid);
+        fds = opendir(directorio);
+        if (fds == NULL) continue;
+        while ((fd = readdir(fds)) != NULL) {
+            char ruta_fd[PATH_MAX];
+            ssize_t longitud;
+            if (fd->d_name[0] == '.') continue;
+            if (snprintf(ruta_fd, sizeof(ruta_fd), "%s/%s", directorio, fd->d_name) >= (int)sizeof(ruta_fd)) continue;
+            longitud = readlink(ruta_fd, enlace, sizeof(enlace) - 1);
+            if (longitud < 0) continue;
+            enlace[longitud] = '\0';
+            if (strcmp(enlace, archivo->ruta) == 0) {
+                archivo->pid_escritor = procesos[i].pid;
+                archivo->pgid_escritor = procesos[i].pgid;
+                archivo->atribuido = 1;
+                closedir(fds);
+                return;
+            }
+        }
+        closedir(fds);
+    }
 }
 
 int escanear_archivos(const char *directorio, float intervalo,

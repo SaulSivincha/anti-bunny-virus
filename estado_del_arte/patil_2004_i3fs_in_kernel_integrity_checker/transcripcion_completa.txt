@@ -1,0 +1,739 @@
+ I3FS: An In-Kernel Integrity Checker and Intrusion Detection File System
+                  Swapnil Patil, Anand Kashyap, Gopalan Sivathanu, and Erez Zadok
+                                       Stony Brook University
+
+Appears in the proceedings of the 18th USENIX Large Installation System Administration Conference (LISA
+                                                 2004)
+
+
+
+                       Abstract                                     System administrators must stay alert to protect their
+                                                                 systems against the effects of malicious intrusions. In
+   Today, improving the security of computer systems
+                                                                 this process, the administrators must first detect that an
+has become an important and difficult problem. Attack-
+                                                                 intrusion has occurred and that the system is in an in-
+ers can seriously damage the integrity of systems. At-
+                                                                 consistent state. Second, they have to investigate the
+tack detection is complex and time-consuming for sys-
+                                                                 damage done by attackers, like data deletion, adding in-
+tem administrators, and it is becoming more so. Current
+                                                                 secure Trojan programs, etc. Finally, they have to fix
+integrity checkers and IDSs operate as user-mode utili-
+                                                                 the vulnerabilities to avoid future attacks. These steps
+ties and they primarily perform scheduled checks. Such
+                                                                 are often too difficult and hence machines are mostly re-
+systems are less effective in detecting attacks that hap-
+                                                                 installed and then reconfigured. Our work does not aim
+pen between scheduled checks. These user tools can be
+                                                                 at preventing malicious intrusions, but offers a method
+easily compromised if an attacker breaks into the sys-
+                                                                 of notifying administrators and restricting access once
+tem with administrator privileges. Moreover, these tools
+                                                                 an intrusion has happened, so as to minimize the effects
+result in significant performance degradation during the
+                                                                 of attacks. Our system uses integrity checking to detect
+checks.
+                                                                 and identify the attacks on a host, and triggers damage
+   Our system, called I3 FS, is an on-access integrity
+                                                                 control in a timely manner.
+checking file system that compares the checksums of
+files in real-time. It uses cryptographic checksums to              In our approach, given that a host system has been
+detect unauthorized modifications to files and performs          compromised by an attack, we aim at limiting the dam-
+necessary actions as configured. I3 FS is a stackable file       age caused by the attack. An attacker that has gained ad-
+system which can be mounted over any underlying file             ministrator privileges could potentially make changes to
+system (like Ext3 or NFS). I3 FS’s design improves over          the system, like modifying system utilities (e.g., /bin
+the open-source Tripwire system by enhancing the func-           files or daemon processes), adding back-doors or Tro-
+tionality, performance, scalability, and ease of use for         jans, changing file contents and attributes, accessing
+administrators. We built a prototype of I3 FS in Linux.          unauthorized files, etc. Such file system inconsistencies
+Our performance evaluation shows an overhead of just             and intrusions can be detected using Tripwire [9, 10, 22].
+4% for normal user workloads.                                    Tripwire is one of the most popular examples of user
+                                                                 mode software that can detect file system inconsisten-
+1 Introduction                                                   cies using periodic integrity checks. There are three dis-
+In the last few years, security advisory boards have ob-         advantages of any such user-mode system: (1) it can be
+served an increase in the number of intrusion attacks on         tampered with by an intruder; (2) it has significant per-
+computer systems [2]. Broadly, these intrusions can be           formance overheads during the integrity checks; and (3)
+categorized as network-based or host-based intrusions.           it does not detect intrusions in real-time. Our work uses
+Defense against network-based attacks involves increas-          the Tripwire model for the detection of changes in the
+ing the perimeter security of the system to monitor the          state of the file system, but does not have these three
+network environment, and setting up firewall rules to            disadvantages. This is because our integrity checking
+prevent unauthorized access. Host-based defenses are             component is in the kernel.
+deployed within each system, to detect attack signatures           In this paper we describe an in-kernel approach to
+or unauthorized access to resources. We developed a              detect intrusions through integrity checks. We call our
+host-based system which performs integrity checking at           system I3 FS (pronounced as i-cubed FS), which is an
+the file system level. It detects unauthorized access, ma-       acronym for In-kernel Integrity checker and Intrusion
+licious file system activity, or system inconsistencies,         detection File System. Our in-kernel system has two
+and then triggers damage control in a timely manner.             major advantages over the current user-land Tripwire.
+
+                                                             1
+First, on discovering any failure in integrity check, I3 FS       tionality on top of existing file systems, as can be seen
+immediately blocks access to the affected file and no-            in Figure 1. With no modification to the lower level file
+tifies the administrator. In contrast, Tripwire checks            system, a stackable file system operates between the vir-
+are scheduled by the administrator, which could leave             tual file system (VFS) and another file system. I3 FS in-
+a larger time-period open for multiple attacks and can            tercepts file system calls and normally passes them to
+potentially cause serious damage to users and their data.         the lower level file system; however, I3 FS also injects its
+Second, I3 FS is implemented inside the kernel as a load-         integrity checking operations and based on return values
+able module. We believe that the file system provides the         to system calls, it affects the behavior that user applica-
+most well-suited hooks for security modules because it            tions see.
+is one level above the persistent storage and most intru-            When designing I3 FS, we aimed at offering a good
+sions would cause file system activity.                           balance between security and performance. We offer
+    In addition to providing these advantages over Trip-          configurable options that allow administrators to tailor
+wire, our system is implemented as a stackable layer              the features of I3 FS to their site needs, trading off func-
+such that it can be stacked on top of any file system.            tionality for performance.
+For example, we can use stacking over NFS to provide
+a network-wide secure file system as well. Finally, it                                  User Process
+is easier to compromise user-level tools (like Tripwire)
+                                                                                               open()
+                                                                                                                               User
+than instrumenting successful attacks at the kernel level.
+                                                                                           sys_open()
+
+                                                                                                                               Kernel
+    We used a stackable file system template generated by
+FiST [28] to build an integrity checking layer which in-                                   vfs_open()
+tercepts calls to the underlying file system. I3 FS uses                       Virtual File System (VFS)
+cryptographic checksums to check for integrity. It stores
+the security policies and the checksums in four different                                  i3fs_open()
+in-kernel Berkeley databases [8]. During setup, the ad-
+ministrator specifies detection policies in a specific for-
+mat, which are loaded into the I3 FS databases. File sys-                                   I3FS
+tem specific calls trigger the integrity checker to com-                    Result Cache                 Policy Cache
+pare the checksums for files that have an associated pol-
+icy. Based on the results, the action is logged and ac-
+cess is allowed or denied for that file. Thus, our system
+                                                                       PolicyDB       DataDB            MetaDB      AccessDB
+design uses on-access, real-time intrusion detection to
+restrict the damage caused by an intrusion attack.
+    The rest of the paper is organized as follows. Sec-
+tion 2 outlines the design goals and architecture of I3 FS.                                ext3_open()
+Section 3 discusses the implementation specifics and key
+operations of I3 FS. Section 4 presents the evaluation of                           File System (Ext3)
+the system. Section 5 discusses related work. We con-
+clude in Section 6 and discuss future directions.                                 Figure 1: I3 FS Architecture
+
+2 Design
+                                                                  2.1 Threat Model
+Checksumming using hash functions is a common way
+of ensuring data integrity. Recently, the use of crypto-          I3 FS is primarily aimed at detecting the following:
+graphic hash functions has become a standard in Internet            • Malicious replacement of vital files such as the
+applications and protocols. Cryptographic hash func-                  ones in the /bin directory. Attackers could re-
+tions map strings of different lengths to short fixed size            place programs such as ls and ps with Trojans,
+results. These functions are generally designed to be col-            without the knowledge of the system administra-
+lision resistant, which means that finding two strings that           tors. These kind of attacks can be tracked and pre-
+have the same hash result is impractical. In addition to              vented through I3 FS by setting up appropriate poli-
+basic collision resistance, functions like MD5 [19] and               cies for important files.
+SHA1 [4] also offer randomness, unpredictability of the             • Unauthorized modification of data by an eaves-
+output, etc. In I3 FS, we use MD5 for computing check-                dropper in the network, in the case of remote file
+sums.                                                                 systems, where the client file system communicates
+   We have designed I3 FS as a stackable file system [26].            with the disk over an insecure network.
+File system stacking is a technique to layer new func-              • Corruption of disk data due to hardware errors. In-
+
+                                                              2
+    expensive disks such as IDE disks silently corrupt              integrity check failures are logged in the I3 FS sys-
+    data stored in them due to magnetic interference                tem.
+    or transient errors. These errors cannot always be            • -g GRANULARITY specifies whether the check-
+    detected by normal file systems. I3 FS can notify               summing is done on a per page basis or for the
+    the administrator about disk corruption if there is a           entire file at once. The available granularity op-
+    suitable policy associated with the file.                       tions are PER PAGE or WHOLE FILE. PER PAGE is
+                                                                    useful for mostly-random file access patterns, and
+2.2 Policies                                                        WHOLE FILE is useful for mostly sequential small-
+The two main goals we considered when designing the                 file access patterns.
+policies for I3 FS were versatility and ease of use. The          • -f FREQ is an integer value that determines the
+policy syntax provided by I3 FS is similar to the user              frequency of integrity checks. For example, a
+level Tripwire [10]. The general format of an I3 FS                 value of 50 for frequency would make I3 FS per-
+policy is as follows:                                               form integrity checking for the file every 50 times
+                                                                    it is opened. This option is available only if
+{-o|-e|-x} OBJECT -m FLAGS -p PROPERTIES                            WHOLE FILE checksumming is chosen.
+-a ACTION [-g GRANULARITY] [-f FREQ] [-r]                         • -r can be applied only if the object is a directory.
+                                                                    This applies the policy recursively to all the files
+where,                                                              below the directory tree specified in OBJECT.
+  • -o OBJECT specifies the object (file or direc-
+                                                                   We have chosen the set of policy options such that
+    tory) for which the rule is valid. If the object is
+                                                                it helps detect most kinds of attacks on the file system.
+    a directory, then the rule applies recursively to all
+                                                                Checksumming different fields of the meta data of files
+    the files and sub-directories. The -e option is used
+                                                                helps detect whether important files have been re-written
+    to exclude an object (in most cases sub-directories)
+                                                                by malicious programs through the file system. Check-
+    from the integrity checks, and the -x option is used
+                                                                summing file data helps detect unauthorized modifica-
+    to remove a policy.
+                                                                tion of data possibly made without the knowledge of the
+  • -m FLAGS represents the set of attributes of the
+                                                                file system. An example of this is a malicious process
+    respective object, used to calculate the checksum.
+                                                                that can write to the raw disk device directly in Unix-
+    The supported attributes are as follows:
+                                                                like operating systems.
+         p    Permission and file mode bits
+         i    Inode Number                                      2.3 I3 FS Databases
+         n    Number of Links                                   I3 FS configuration data is stored in four different
+         u    User id of the owner                              in-kernel databases. KBDB [8] is an in-kernel imple-
+         g    Group id of the owner                             mentation of the Berkeley DB [21]. Berkeley DB is a
+         s    File size                                         scalable, high performance, transaction-protected data
+         d    ID of the device on which the inode resides       management system that efficiently and persistently
+         b    Number of blocks allocated                        stores hkey, valuei pairs using hash tables, B+ trees,
+         a    Access time                                       or queues. I3 FS stores four databases in the B+ tree
+         m    Modification time                                 format, so that we benefit from locality. The schema for
+         c    Inode change time                                 the four databases is given in Table 1.
+  • -p PROPERTIES represents the properties of
+    the policies, used to calculate the checksum. The
+                                                                   Database       Key               Value
+    properties offered are as follows:
+                                                                   policydb       inode#            Policy bits, freq#
+         D   Checksum file data                                    datadb         inode#, page#     Checksum value
+         I   Inherit the policies for new files                    metadb         inode#            Checksum value
+                                                                   accessdb       inode#            Counter value#
+  • -a ACTION determines the action taken if the in-
+    tegrity check failed. Our I3 FS implementation sup-                    Table 1: I3 FS: Database Schemas
+    ports only two actions: BLOCK and NO - BLOCK.
+    The BLOCK action returns a failure for any attempt             Having separate databases for storing the data and
+    to access the respective file and alerts the admin-         meta data checksums is advantageous in certain situa-
+    istrator about the inconsistency of this critical re-       tions. Generally, we expect that meta data checksum-
+    source. The NO BLOCK action lets the operation              ming would be used more commonly than data check-
+    go through I3 FS to the underlying file system. All         summing for two reasons. First, almost all modifications
+
+                                                            3
+to a file made through the file system will result in mod-
+ifications to its meta data. Second, meta data checksum-
+ming is less time-consuming than data checksumming                 2.4 Caching in I3 FS
+as the number of bytes to be checksummed is smaller.               In I3 FS, each file access is preceded by a check whether
+Therefore, having the data and meta data checksums in              that file has an associated policy or not. We expect that
+two different databases results in less I/O and more ef-           the number of files that have policies will be much less
+ficient cache utilization as data checksums need not be            than the number of files without policies. Hence, it is
+fetched along with meta data checksums.                            important that we optimize for the common case of a
+   The policy database (policydb) contains the policy              file without an associated policy. Second, for those files
+options associated with the files and optionally the fre-          that have policies and are accessed frequently, check-
+quency of check values. We use the inode number to re-             sums should not be re-computed on each access.
+fer to the policies instead of the path names so as to avoid          I3 FS caches two kinds of information. First, whether
+unnecessary string comparisons. We have a user level               a given file has a policy associated with it or not, and
+tool that reads the policy file and populates the policy           if so, the policy for that file. Second, it caches the re-
+database. Further details about initialization and setup           sult of the previous integrity check. All information is
+are given in Section 3. The policy database has the in-            cached in the private data of the in-memory inode ob-
+ode number of the file as the key, and the data is either          jects. The inode private data includes several new fields
+a 4 byte or an 8 byte value containing the policy bits             to cache policies, meta data checksum results, whole file
+and optionally the frequency of integrity checks (if the           data checksum results, and per page checksum results.
+frequency of checks policy option is chosen).                      While caching the policies, the result of the check for
+   The data checksum database (datadb) contains the                the existence of a policy is also cached. This mecha-
+checksums of file data for those files that have a policy          nism serves the purpose of having both a positive and
+option for checksumming their data. Since there are two            negative cache for the existence of policies, thereby ex-
+sub-options for checksumming file data, the per page               pediting the check for both files that have and those that
+and the whole file checksumming, this database either              do not have policies associated with them.
+contains N of checksums for a single file, where N is                 As a per page integrity checking cache, the inode pri-
+the number of pages in the file, or a single checksum              vate data contains an integer array with ten elements
+for the entire file. The inode number and the page num-            which acts as a page bitmap. The cache can hold the in-
+ber form the key for this database. If the option is to            tegrity check results for the first 320 pages when run on
+checksum the whole file, then the single checksum value            an i386 system with page size of 4KB. Thus the results
+will be indexed with page number zero. The data check-             for files which are less than 5MB can be fully cached.
+sum database is populated during the I3 FS initialization          This accounts for almost 90% of the files in a normal
+phase through an ioctl, when the policies are added                system [7].
+to the policy database.                                               The data and meta data integrity check result caches
+   The meta data checksum database (metadb) has a                  are invalidated every time there is a data or inode write
+simple design. The key is the inode number and the                 for that file. Since all information is cached in the in-
+data is the checksum value for the set of fields of the            ode private data and not in an external list, the recla-
+inode that are specified in the policy options. Informa-           mation process for the inode cache will take care of the
+tion about the set of fields that are checksummed is not           I3 FS configuration cache reclamation also. This method
+stored in the meta data checksum database. Instead it is           of caching is advantageous because the inodes for the
+retrieved from the policy database that stores the policy          frequently-accessed files will be present in the inode
+bits. This database is also populated during the initial-          cache and hence the policies and results for those files
+ization phase which we discuss in Section 3.                       will also be present in the cache.
+   The access counter database (accessdb) contains
+a counter that represents the number of times a file               2.5 Securing I3 FS Components
+has been opened after the last time it was checked                 Securing the databases that store the configuration and
+for integrity. This is useful to set custom numbers                setup of I3 FS is one of the prime requirements for mak-
+for frequency of checks, so that less important files              ing I3 FS a secure file system. There can be valid up-
+need not be checked for integrity every time they are              dates to the checksums needed when a file needs to be
+accessed. For files that have a policy indicating a                genuinely updated and these updates have to follow a
+custom frequency of check number, every read will                  secure channel so that there can be a clear differentia-
+result in getting the previous counter value, increasing it        tion between authorized and unauthorized updates to the
+by one and saving the new value, if the counter has not            files. I3 FS uses an authentication mechanism to ensure
+exceeded the frequency limit.                                      that updates to the checksums are made by authorized
+
+                                                               4
+personnel.                                                       2.6 Actions Upon Failure
+   I3 FS stores the four databases that it uses in an en-        There are two kinds of actions that can be specified for
+crypted form. We use the in-built cryptographic API              files for which integrity checking fails. They are the
+provided by the Berkeley Database Manager for encryp-            BLOCK and NO - BLOCK options. The BLOCK option
+tion. We use the AES encryption algorithm [14] with              disallows access to files that fail integrity check, and
+a 128-bit key size. Since I3 FS requires a key to be             a message is recorded in the log. In the case of NO -
+provided for reading the encrypted database, we wrote            BLOCK option, access is allowed for files that fail in-
+a custom file system mount program that accepts the              tegrity check but an appropriate message is logged. By
+passphrase from the administrator. Having the database           default I3 FS logs messages through syslog. Optionally,
+encrypted prevents unauthorized reading of the database          a log file name can be given as a mount option to the cus-
+file without going through the authentication process.           tom mount program, and all log messages will be written
+                                                                 directly to that file.
+2.5.1 Authentication
+                                                                 3 Implementation
+An authentication mechanism is required for I3 FS for
+two reasons. First, mounting and setup of I3 FS should           I3 FS is implemented as a stackable file system that can
+be done through a secure channel so that malicious pro-          be mounted on top of any other file system. Unlike tra-
+cesses that acquire super user privileges could not mount        ditional disk-based file systems, I3 FS is mounted over
+the file system with incorrect configuration options. Sec-       a directory, where it stores the files. In this section we
+ond, valid updates to the files that carry policies should       discuss the key operations of I3 FS and their implemen-
+be permitted only through a secure channel. This is be-          tation.
+cause critical programs and files need to be updated oc-
+casionally and such updates should not require reinitial-        3.1 Initialization and Setup
+ization of the file system.                                      The first time the administrator mounts I3 FS, a
+   Since the I3 FS databases are encrypted, reading them         passphrase needs to be entered for the file system to
+requires a passphrase. Therefore we provide a cus-               initialize itself. The first mount operation will store the
+tom mount program that authenticates the person mount-           HMAC hash of a known word, “i3fspassphrase,” hashed
+ing the file system. The first time I3 FS is mounted,            using the passphrase entered, into the policy database
+the administrator is prompted for a passphrase. This             for authenticating further mounts. After the file system
+passphrase is used to compute the cryptographic hash for         is mounted, the administrator has to run a user level
+a known word, “i3fspassphrase.” We store this hash as            setup tool that takes a policy file as input. The format
+part of the policy database. During subsequent mounts,           of the policy file is described in Section 2.2. The user
+the passphrase entered is validated by computing the             level utility calls the corresponding ioctls to set up
+hash again and comparing it with the stored hash. Upon           the policies to the four databases:
+mismatch of hashes, the mount process is aborted and
+an error message is returned to the user-level mount pro-          • ADD POLICY: This ioctl takes the passphrase,
+gram. If the passphrase entered is correct, it is stored             path name, and policy bits (an integer) as input. It
+in the private data of the super-block structure. Thus the           verifies the passphrase, converts the path name to
+passphrase is kept non-persistent and stored in the kernel           an inode number, and stores the inode number and
+memory only.                                                         the policy bits in the policy database. In addition,
+   The checksums for all files that have a policy are com-           based on the policy bits, the ioctl computes
+puted during the initialization phase of I3 FS. To allow             meta data and data checksums appropriately and
+valid updates to files whose checksums have already                  inserts them into the meta data and data databases.
+been stored, we provide two modes of operations for
+I3 FS: one that allows updates and another that does not.          • REMOVE POLICY: This ioctl takes a passphrase
+This is implemented using a flag in the in-memory super              and path name as input. It authenticates and then
+block which can be set and unset from user level through             converts the path name to an inode number and
+an ioctl. This ioctl can be executed only after pro-                 removes all entries from all four databases that
+viding a valid passphrase. The passphrase passed to the              match the given inode number.
+ioctl is compared with the one that is stored in the su-
+per block private data and access is granted based on the          • ALLOW UPDATES:       This ioctl takes the
+result. A similar authentication method is implemented               passphrase as argument. It just authenticates and
+for the ADD POLICY and REMOVE POLICY ioctls as                       sets the AUTO UPDATE flag in the in-memory super
+well.                                                                block which allows updates to files with a pol-
+
+                                                             5
+      icy, along with the update of their checksum values.
+                                                                          START
+    • DISALLOW UPDATES: This ioctl resets the                                 i3fs_permission           YES
+      update flag in the super block private data, so that
+                                                                             Is                       Is
+      further updates to checksums of files with policies                  result          YES      result
+                                                                                                                NO
+
+      are stopped.                                                        cached?                    true?
+
+                                                                              NO
+
+   Recursive policies can also be specified for directo-                     Is
+                                                                                           NO                        Policy
+ries, so that the policy is applied to all files inside the                policy                Get policy           DB
+                                                                          cached?
+directory tree. In this case, the user level program uses
+                                                                              YES
+nftw(3) to enumerate the set of files for which the                                              Cache policy
+policies should be applied. It then calls the ioctl for              Compute checksum
+each of the files.
+   The usage of the user level program i3fsconfig is                                             Checksum
+                                                                     Get stored checksum         Databases
+as follows:
+
+                                                                            Do
+i3fsconfig [-u ALLOW|DISALLOW] [-f POLICYFILE]                           checksums         NO
+                                                                           match?
+
+3.2 Mount Options                                                             YES
+3
+I FS is mounted using a custom mount program that                       Cache result             Cache result
+uses the mount(2) system call. It uses getpass(3)
+to accept a passphrase from the administrator and passes                  Allow                    Block
+the passphrase as a mount option. A custom mount pro-
+gram is used instead of the Linux mount program be-
+cause the passphrase entered should not be visible at the             Figure 2: Flowchart for I3 FS permission checks
+user level after the file system is mounted.
+   There are three optional mount parameters.                     i3fs permission function is called after lookup for
+    • The      auto-update          option     sets    the        every file that is accessed. Hence, the integrity check
+      AUTO UPDATE flag in the kernel so that checksums
+                                                                  cannot be bypassed for files with a policy. The permis-
+      will be updated every time a file with a policy is          sion check function first checks the policy cache to de-
+      updated.                                                    termine if the file’s inode has a policy associated with it.
+    • The logfile option allows one to specify a sep-             Upon a cache miss, it refers to the policy database and
+      arate log file where the I3 FS log messages can be          then decides the result. If there is a policy associated
+      written to.                                                 with the file, its policy bits are retrieved from the pol-
+    • The dbdir option allows the administrator to set            icy database. From the policy bits, the set of inode fields
+      the location of the checksum databases. Normally            that have to be checksummed is found and the checksum
+      these databases are stored inside the file system,          for those fields is computed. This computed checksum
+      and I3 FS prevents direct access to them and hides          is verified against the checksum value stored in the meta
+      them from view. With this option, administrators            data checksum database. If both checksums match, then
+      can place the databases in a different directory than       access is granted; if the checksums do not match, then
+      the checksummed file system; this is useful, for ex-        the necessary action is performed as per the action pol-
+      ample, when I3 FS is stacked on top of NFS because          icy bit.
+      the databases could be kept on a safer local direc-            Once it is determined if the inode has a policy asso-
+      tory.                                                       ciated with it or not, the information is stored in the in-
+                                                                  memory inode as a cache for further accesses. As long
+3.3 Meta Data Integrity Checking                                  as that inode is present in the inode cache, the policy
+The flowchart for meta data integrity checking is shown           information will also be cached.
+in Figure 2. For checksumming the meta data, since
+we have a customizable set of inode fields to be check-
+                                                                  3.4 Data Integrity Checking
+summed, we need to use both the policy bits and                   We provide two options for checksumming file data.
+the stored checksums for integrity checking. The                  The first is PER PAGE checksumming and the second
+meta data integrity checking is done in the file per-             is WHOLE FILE checksumming. In the case of per
+mission check function, i3fs permission. The                      page checksumming, integrity checking is done in the
+
+                                                              6
+page level read function, i3fs readpage. If the                    file update. However, these kinds of checksum updates
+option is to checksum whole files, then the integrity              should be allowed through a secure channel so as to pre-
+checking is done in the open function, i3fs open.                  vent malicious programs from triggering checksum up-
+In the case of WHOLE FILE checksumming, whenever                   dates subsequent to an unauthorized modification to file
+i3fs open is called for a file with a policy, the pol-             data. In I3 FS, we provide a flag called AUTO UPDATE
+icy bits present in the in-memory inode are checked.               which can be set and reset by the administrator af-
+If the data checksum mode bit is set to WHOLE FILE,                ter authenticating using the passphrase. This can also
+then the checksum for the whole file is computed and               be set during mount as a mount option. When the
+verified against the checksum value stored in the data             AUTO UPDATE flag is set, all updates to files with poli-
+checksum database. If they match, i3fs open suc-                   cies will update the checksums associated with them. If
+ceeds; if not, the necessary action is performed as per            the flag is not set, file data updates will be allowed with-
+the policy bits. The WHOLE FILE integrity check re-                out updates to the checksums so that these are catego-
+sults are cached in the inode private data in a field named        rized as unauthorized changes. The AUTO UPDATE flag
+whole file result.                                                 can only be set from a console for security reasons; pro-
+   In     PER PAGE       integrity   checking,        during       cesses that are executing in a non-console shell are not
+i3fs readpage, I3 FS checks the policy bits to                     allow to update checksums when the AUTO UPDATE flag
+determine whether page-level checksumming is en-                   is set.
+abled. If yes, then the checksum is computed for that                 The checksum updates for meta data are done in the
+page and it is compared with the stored value in the data          put inode file system method of I3 FS. Whole file
+checksum database. The result is cached in the page                checksums are updated in the file release method and
+bitmap present in the inode private data as explained in           per page checksums are updated in the writepage and
+Section 2.4.                                                       commit write methods, respectively.
+
+3.5 Frequency of Checks                                            3.8 Inheriting Policies
+Since whole file checksumming is a costly operation, we            To facilitate automatic policy generation for new files
+provide an option for specifying the frequency of in-              that get created after I3 FS is initialized, we provide a
+tegrity checks in the policy. For performance reasons,             method for the policy of the parent directory to be in-
+one can set up a policy for a file such that it will be            herited by the files and directories that are created under
+checked for integrity every N times it is opened, where            it. This can be used by setting the INHERIT policy bit
+N is an integer value. Every time a file with a policy             for the directory in question. Whenever a file or a di-
+is opened, we check if it has a frequency number asso-             rectory is created, the policy of the parent directory is
+ciated with it. If yes, the counter entry for the file in          copied for it, if its parent directory has the INHERIT bit
+the access database is incremented by one. When the                set. However, for checksums to be updated for the new
+value is equal to N , integrity check is performed and the         file, the AUTO UPDATE flag must be set. If the flag is not
+counter is then reset to zero.                                     set, then the policy of the parent directory will be copied
+                                                                   for the new file, but the checksums will not be updated.
+3.6 Updating Policies                                              Thus the next time such a file is accessed there will be a
+Policies that are enforced when the file system is ini-            checksum mismatch.
+tialized might not remain valid at all times. We pro-
+vide a method by which the administrator can update                4 Evaluation
+the policies dynamically without reinitializing the sys-           We used the stackable templates generated by FiST [28]
+tem. This can be done using the following two ioctls:              as our base, and it started with 5,670 lines of code. To
+ADD POLICY and REMOVE POLICY . The administrator                   implement I3 FS, we added 4,227 lines of kernel code
+can either add policies to new files or remove policies            and 300 lines of user level code. In addition to this,
+from existing files. If a policy for an existing file has          I3 FS includes 367 lines of checksumming code imple-
+to be modified, it has to be first removed and then re-            mented by Aladdin Enterprises [5]. We wrote two user
+inserted using the ADD POLICY ioctl.                               level tools: a custom mount program for I3 FS and an-
+                                                                   other tool for setting up, initializing, and configuring
+3.7 Updating Checksums                                             I3 FS. I3 FS is implemented as a kernel module and re-
+Often it is required that files with policies be updated           quires the in-kernel Berkeley database [8] module to be
+from time to time. For example, administrators need to             loaded prior to using I3 FS.
+install or upgrade system binaries. Such updates should               To measure the performance of I3 FS, we stacked I3 FS
+also re-compute the checksums that are stored in the               on top of a plain Ext2 file system and compared its per-
+databases, so that I3 FS need not be reinitialized for every       formance with native Ext2. All measurements were con-
+
+                                                               7
+ducted on a 1.7GHz Pentium 4 with 1GB RAM and a                   for Ext2, as well as for I3 FS for the aforementioned six
+20GB Western Digital Caviar IDE disk. For the fre-                configurations.
+quency of checks experiment, described in Section 4.3,               For an I/O-intensive benchmark we used Postmark
+we lowered the amount of memory to 64MB. The op-                  [23], a popular file system benchmarking tool. Post-
+erating system we used was Red Hat Linux 9 running                mark creates a large number of files and continuously
+a vanilla 2.4.24 kernel. We unmounted and remounted               performs operations that change the contents of the files
+the file systems before each run of benchmarks so as to           to simulate a large mail server workload. We configured
+ensure cold caches. All benchmarks were run at least              Postmark to create 20,000 files (between 512 bytes and
+ten times and we computed 95% confidence intervals                10KB) and perform 200,000 transactions in 200 directo-
+for the mean elapsed, system, user, and wait time using           ries. Postmark was run on Ext2 and I3 FS with NP, MDI,
+the Student-t distribution. In each case, the half widths         MWI , and MPI configurations. The other configurations,
+of the intervals were less than 5% of the mean. In the            MD , MW , and MP , are not relevant for Postmark, as Post-
+graphs in this section, we show the 95% confidence in-            mark creates a lot of new files and these configurations
+terval as an error bar for the elapsed time. Wait time is         only apply to existing files.
+the elapsed time less CPU time and user time and con-                Finally, to measure the performance of I3 FS with fre-
+sists mostly of I/O, but process scheduling can also af-          quency of checks, we wrote a custom program that re-
+fect it.                                                          peatedly performs read operations on a single file. We
+   We calculated the overheads of I3 FS under several dif-        conducted this test for I3 FS with frequency of checks
+ferent configurations and a variety of system workloads.          set to 1, 2, 4 ,8, 16, and 32.
+Based on the types of policies, we classified the tests as
+follows:                                                          4.1 Am-utils Results
+  • Without any policies (NP)                                     Figure 3 shows the overheads of I3 FS under different
+  • Only meta data checksumming (MD)                              configurations for an Am-utils compile.
+  • Meta data and whole-file data checksumming (MW)
+  • Meta data and per-page data checksumming (MP)
+                                                                                       300
+  • Meta data and whole-file checksumming with in-                                             Wait
+                                                                                               User
+                                                                                             System
+    heritable policies (MWI)
+                                                                                       250
+  • Meta data and per-page checksumming with inher-                                                                                                                   222s
+                                                                                                       216s      216s      217s      216s       216s       219s
+                                                                                               214s
+    itable policies (MPI)
+                                                                                       200
+
+   Each of the above configurations of I3 FS are used
+
+                                                                  Elapsed time (sec)
+to identify the isolated overheads of the components of                                150
+
+I3 FS. The NP configuration does not compute check-
+sums, and is useful in finding the overheads due to the                                100
+
+stackable layer and to check whether files have policies
+associated with them or not. The MD configuration is                                   50
+
+used to find the overhead of checksumming the meta
+data alone. The other configurations, MW, MP, and MPI,                                  0
+                                                                                               Ext2   I3FS-NP   I3FS-MD   I3FS-MW   I3FS-MP   I3FS-MDI   I3FS-MPI   I3FS-MWI
+isolate the overheads associated with each of the check-
+summing options described on Section 2.                                                      Figure 3: Am-utils results for Ext2 and I3 FS
+   We tested I3 FS using a CPU-intensive benchmark, an
+I/O-intensive benchmark, and a custom read benchmark                 The configuration of I3 FS that has the maximum over-
+to test the frequency of checks performance.                      head when compared to regular Ext2 is the MWI config-
+   For a CPU-intensive benchmark, we compiled the                 uration. It has an overhead of 4% elapsed time and 13%
+Am-utils package [16]. We used Am-utils 6.1b3: it con-            system time. Most of the elapsed time overhead is due to
+tains over 60,000 lines of C code in 430 files. The build         system time increase because of the checksum computa-
+process begins by running several hundred small config-           tion. The MWI configuration calculates data checksums
+uration tests to detect system features. Then it builds a         for whole files including the files that are newly created.
+shared library, ten binaries, four scripts, and documen-          Therefore, it has the highest overhead of all configura-
+tation: a total of 152 new files and 19 new directories.          tions. The elapsed time overheads of all other configu-
+Although the Am-utils compile is CPU intensive, it con-           rations are less than 1%. The MPI configuration has a
+tains a fair mix of file system operations, which result in       system time overhead of 7% as this configuration com-
+the creation of several files and random read and write           putes data checksums for files including newly created
+operations on them. This compile benchmark was done               ones. The system time overhead of other configurations
+
+                                                              8
+range from 2% to 3%.                                                                   Since Postmark creates 20,000 files and performs
+  Since an Am-utils compile represents a normal user                                200,000 transactions within a short period of just 10
+workload, we conclude that I3 FS performs reasonably                                minutes, it generates a rather intensive I/O workload. In
+well under normal conditions.                                                       normal multi-user systems, such workloads are unlikely.
+                                                                                    The above benchmark shows a worst case performance
+4.2 Postmark Results                                                                of I3 FS. Under normal conditions, the overheads of I3 FS
+                                                                                    are reasonably good, as evident from the Am-utils com-
+Figure 4 shows the overheads of Ext2 and I3 FS for Post-                            pile results in Section 4.1.
+mark under the NP, MDI, MPI, and MWI configurations.
+Since Postmark creates and accesses files on its own, it                            4.3 Frequency of Checks
+can only exercise configurations that have inheritable
+policies.                                                                           To measure the performance of I3 FS for whole file
+                                                                                    checksumming with frequency of checks enabled,
+                                                                                    we wrote a custom user level program that reads the
+                     700     Wait
+                             User                                      645s
+                                                                                    first page of a 64MB file 500 times. We ran this test
+                           System
+                                                                                    with 64MB RAM, so as to ensure that cached pages
+                     600
+                                                                                    are flushed when the file is read sequentially during
+                     500
+                                                            493s
+                                                                                    checksum computation phase. Since the file is read
+                                                                                    sequentially, by the time the last page of the 64MB file
+
+Elapsed time (sec)
+                     400                                                            is read, we can be sure that the first page is flushed
+                                                                                    out of memory. We calculated the difference in speeds
+                     300
+                                                 241s                               for frequency values of 1, 2, 4, 8, 16, and 32. These
+                     200                                                            numbers reduce the frequency that the checksums are
+                                      157s
+                             144s
+                                                                                    computed logarithmically. Figure 5 shows the results
+                     100
+                                                                                    of our custom benchmark for the different values of
+                      0
+                                                                                    frequency of checks.
+                             Ext2    I3FS-NP   I3FS-MDI   I3FS-MWI   I3FS-MPI
+
+
+
+
+                           Figure 4: Postmark results for Ext2 and I3 FS                                                                                        Wait
+                                                                                                         1600                                                   User
+                                                                                                                                                              System
+
+                                                                                                                1393s
+   Unlike the Am-utils compile, for Postmark we were                                                     1400
+
+
+able to see a wide range of overheads for different con-                                                 1200
+
+figurations of I3 FS. The NP configuration had an elapsed
+
+                                                                                    Elapsed time (sec)
+                                                                                                         1000
+time overhead of 9%. The system time overhead was
+89%, which is mainly because of the check for the ex-                                                    800
+
+istence of policies. The overhead due to indirection                                                     600
+of the stackable layer also adds to this overhead. The                                                                    464s
+
+
+MDI configuration had an elapsed time overhead of 67%.                                                   400
+                                                                                                                                   279s
+
+This overhead is partly because of checksum computa-                                                     200                                155s
+
+tion for the meta data during file creation and accessing.                                                                                            82s
+                                                                                                                                                                 41s
+                                                                                                           0
+Database operations for storing and retrieving meta data                                                        Freq-1   Freq-2   Freq-4   Freq-8   Freq-16    Freq-32
+
+checksums also contribute to the overall overhead. I3 FS
+under the MWI configuration was 3.5 times slower than                               Figure 5: Frequency-of-checks benchmark results for
+Ext2. This is because it computes, stores, and retrieves                            frequency values of 1, 2, 4, 8, 16, and 32.
+checksums for the data and meta data of all files, includ-
+ing newly created files. Finally, the MPI configuration                                As evident from the figure, the time taken is reduced
+was 4.5 times slower than Ext2. The MPI configura-                                  logarithmically as the frequency number increases ex-
+tion checksums the meta data and the individual pages                               ponentially. We can see that the rate of decrease of the
+of all the files. The MPI configuration of I3 FS is slower                          elapsed time and the system time is almost equal. This is
+than the MWI configuration because we configured Post-                              because both the I/O for reading the files and the check-
+mark to create files whose sizes range from 512 bytes to                            sum computation itself reduces as the frequency value
+10KB. Thus the maximum number of pages a file can                                   increases. Without a custom frequency value (Freq-1),
+have is three as the page size is 4KB, and computing the                            the program takes 1,393 seconds to complete, and as the
+checksums for the three pages in one shot is more effi-                             frequency value increases, the time taken reduces to 464
+cient than checksumming individual pages separately.                                seconds, 279 seconds, and so on.
+
+                                                                                9
+  Therefore, when system administrators are concerned             that delegates certain system critical responsibilities to
+about the system performance while checksumming                   a sandbox. This helps in localizing the impact of any
+whole files, they can set an appropriate frequency of             attack after a pseudo off-line detection process. In con-
+check value.                                                      trast, our approach uses interposition of calls made by
+                                                                  the virtual file system (VFS) on behalf of a file system.
+5 Related Work                                                       Another class of solutions uses call-graph analysis to
+In recent years, systems researchers have proposed vari-          backtrack any intrusions on a host [11]. These tech-
+ous alternatives to increase the security of computer sys-        niques aim to determine the vulnerability of the system
+tems. These solutions can be broadly categorized as user          used by the attacker to break into the system after an
+mode and kernel mode. Integrity checking of files is an           attack took place. In contrast, I3 FS tries to detect an in-
+important aspect of system security. Our work is an in-           trusion or inconsistency in the system as it occurs.
+kernel approach to check integrity and detect intrusions             Finally, more recent work uses Virtual Machine Mon-
+in the file system.                                               itors (VMM) to detect any intrusions by placing the IDS
+   In this section we briefly discuss some previous work          in a more secure hardware domain [6]. This approach
+that addresses integrity checking and file system security        aims to minimize the impact of an attacker on the intru-
+in a broader sense. We discuss this in three categories:          sion detection system. This approach has been tested for
+user-mode utilities, in-kernel approaches and other ap-           passive attack scenarios and incurs system overhead due
+proaches that increase the security of the computer sys-          to context switches across the interface between the OS
+tems.                                                             and the VMM. In contrast, our approach has less over-
+                                                                  head since we use fine-grained indirection.
+User Tools and Utilities The open-source community
+has developed various user-mode tools for file system             6 Conclusions
+integrity checking. While we follow the semantics of
+Tripwire [9, 10, 22] for our integrity checker, there are         We have described the design, operation, security, and
+other similar tools. These include Samhain [20], Osiris           performance of a versatile integrity checking file system.
+[15], AIDE [18], and Radmind [3]. Most of these user-             A number of different policy options are provided with
+mode tools were modeled along the lines of Tripwire.              various levels of granularity. System administrators can
+AIDE and Radmind have been developed for UNIX sys-                customize I3 FS with the appropriate options and poli-
+tems with some more functions like threaded daemons               cies so as to get the best use of it, keeping in mind per-
+and easy system management. In addition, Samhain uses             formance requirements. As evident from the benchmark
+a stealth mode of intrusion detection with remote admin-          results, I3 FS has a performance overhead of 4% com-
+istration utilities.                                              pared to regular Ext2 under normal user workloads. The
+                                                                  encrypted database and cryptographic checksums make
+In-Kernel Approach Linux Intrusion Detection Sys-                 I3 FS a highly secure and reliable system.
+tem (LIDS) [12] is a more comprehensive system that
+modifies the Linux access control semantics, called dis-          6.1 Future Work
+cretionary access control (DAC), thus offering manda-             Our group has previously developed secure and versatile
+tory access control inside the kernel. In contrast, our           file systems like NCryptfs [25, 27], Tracefs [1] and Ver-
+work does not change any Linux semantics or any mod-              sionfs [13] and we would like to integrate the features of
+ifications to the kernel. We leverage file system level           these file systems together with I3 FS so as to provide a
+call interposition using a loadable kernel module for file        highly secure and versatile system.
+systems.                                                             Currently, I3 FS cannot be customized to individual
+   A similar approach is used by Linux Security Mod-              users. We plan to add per user policies and options,
+ules (LSM) [24], which present an extensible framework            so that individual users can set up security options for
+with in-kernel hooks for adding new security mecha-               their own files, without requiring the intervention of the
+nisms inside the kernel for file systems, memory man-             system administrators, but still allow administrators to
+agement and the network sub-systems. LSM does not                 override global policies.
+use any policies, but provides a foundation to add com-
+plete system security.                                            7 Acknowledgments
+Other Systems Security Apart from integrity check-                We thank the anonymous Usenix LISA reviewers for
+ers, there are other ways to increase the security of any         the valuable feedback they provided, and our shepherd
+host. System call interposition [17] uses the indirection         Michael Gilfix. Thanks go to Charles P. Wright for his
+of any call to a kernel function. This is a powerful tool         suggestions; this work was based on integrity protec-
+for monitoring application behavior as soon as the con-           tion ideas and experience developed by Charles within
+text switches to kernel mode. Ostia [6] presents a model          the NCryptfs encryption file system. This work was
+
+                                                             10
+partially made possible by an NSF CAREER award                 [11] S. King and P. Chen. Backtracking Intrusions. In
+CNS-0133589, NSF Trusted Computing award CCR-                       Proceedings of the 19th ACM Symposium on Oper-
+0310493, and HP/Intel gift numbers 87128 and 88415.1.               ating Systems Principles (SOSP ’03), Bolton Land-
+  The open-source software described in this pa-                    ing, NY, October 2003.
+per is available in www.fsl.cs.sunysb.edu/                     [12] LIDS Project. Linux intrusion detection system.
+project-i3fs.html.                                                  www.lids.org.
+References                                                     [13] K. Muniswamy-Reddy, C. P. Wright, A. Himmer,
+ [1] A. Aranya, C. P. Wright, and E. Zadok. Tracefs: A              and E. Zadok. A Versatile and User-Oriented Ver-
+     File System to Trace Them All. In Proceedings of               sioning File System. In Proceedings of the Third
+     the Third USENIX Conference on File and Storage                USENIX Conference on File and Storage Tech-
+     Technologies (FAST 2004), pages 129–143, San                   nologies (FAST 2004), pages 115–128, San Fran-
+     Francisco, CA, March/April 2004.                               cisco, CA, March/April 2004.
+ [2] CERT Coordination Center. CERT/CC Overview                [14] J. Nechvatal, E. Barker, L. Bassham, W. Burr,
+     incident and Vulnerability Trends Techni-                      M. Dworkin, J. Foti, and E. Roback. Report on the
+     cal Report.        www.cert.org/present/                       Development of the Advanced Encryption Stan-
+     cert-overview-trends.                                          dard (AES). Technical report, Department of Com-
+                                                                    merce: National Institute of Standards and Tech-
+ [3] W. Craig and P. M. McNeal. Radmind: The Inte-
+                                                                    nology, October 2000.
+     gration of Filesystem Integrity Checking with File
+     System Management. In Proceedings of the 17th             [15] Osiris. Osiris: Host Integrity Management Tool.
+     USENIX Large Installation System Administration                www.osiris.com.
+     Conference (LISA 2003), October 2003.                     [16] J. S. Pendry, N. Williams, and E. Zadok. Am-
+ [4] P. A. DesAutels.  SHA1: Secure Hash Al-                        utils User Manual, 6.1b3 edition, July 2003. www.
+     gorithm. www.w3.org/PICS/DSig/SHA1_1_0.                        am-utils.org.
+     html, 1997.                                               [17] N. Provos. Improving Host Security with System
+ [5] P. Deutsch. Independent implementation of MD5                  Call Policies. In Proceedings of the 12th Annual
+     (RFC 1321). www.opensource.apple.com/                          USENIX Security Symposium, August 2003.
+     darwinsource/10.2.3/cups-30/cups.                         [18] J. Reed. File Integrity Checking with AIDE,
+ [6] T. Garfinkel and M. Rosenblum. A Virtual Ma-                   2003. www.ifokr.org/bri/presentations/
+     chine Introspection Based Architecture for Intru-              aide_gslug-2003/.
+     sion Detection. In Proceedings of the Network and         [19] R. L. Rivest. RFC 1321: The MD5 Message-
+     Distributed System Security Symposium, February                Digest Algorithm. In Internet Activities Board. In-
+     2003.                                                          ternet Activities Board, April 1992.
+ [7] S. Ghemawat, H. Gobioff, and S.-T. Leung. The
+                                                               [20] Samhain Labs. Samhain: File System Integrity
+     Google File System. In Proceedings of the 19th
+                                                                    Checker.   http://samhain.sourceforge.
+     ACM Symposium on Operating Systems Principles
+                                                                    net.
+     (SOSP ’03), pages 29–43, Bolton Landing, NY,
+     October 2003.                                             [21] M. Seltzer and O. Yigit. A new hashing package
+                                                                    for UNIX. In Proceedings of the Winter USENIX
+ [8] A. Kashyap, J. Dave, M. Zubair, C. P. Wright,
+                                                                    Technical Conference, pages 173–84, Dallas, TX,
+     and E. Zadok.     Using Berkeley Database in
+                                                                    January 1991. www.sleepycat.com.
+     the Linux kernel. www.fsl.cs.sunysb.edu/
+     project-kbdb.html, 2004.                                  [22] Tripwire Inc. Tripwire Software. www.tripwire.
+                                                                    com.
+ [9] G. Kim and E. Spafford. Experiences with Trip-
+     wire: Using Integrity Checkers for Intrusion De-          [23] VERITAS Software.      VERITAS File Server
+     tection. In Proceedings of the Usenix System Ad-               Edition Performance Brief: A PostMark 1.11
+     ministration, Networking and Security (SANS III),              Benchmark Comparison.      Technical report,
+     1994.                                                          Veritas Software Corporation, June 1999.
+[10] G. Kim and E. Spafford. The Design and Imple-                  http://eval.veritas.com/webfiles/
+     mentation of Tripwire: A File System Integrity                 docs/fsedition-postmark.pdf.
+     Checker. In Proceedings of the 2nd ACM Con-               [24] C. Wright, C. Cowan, J. Morris, S. Smalley, and
+     ference on Computer Commuications and Society                  G. Kroah Hartman. Linux Security Modules: Gen-
+     (CCS), November 1994.                                          eral Security Support for the Linux Kernel. In Pro-
+
+                                                          11
+     ceedings of the 11th USENIX Security Symposium,
+     San Francisco, CA, August 2002.
+[25] C. P. Wright, M. Martino, and E. Zadok. NCryptfs:
+     A Secure and Convenient Cryptographic File Sys-
+     tem. In Proceedings of the Annual USENIX Techni-
+     cal Conference, pages 197–210, San Antonio, TX,
+     June 2003.
+[26] E. Zadok and I. Bădulescu. A stackable file system
+     interface for Linux. In LinuxExpo Conference Pro-
+     ceedings, pages 141–151, Raleigh, NC, May 1999.
+[27] E. Zadok, I. Bădulescu, and A. Shender. Cryptfs:
+     A stackable vnode level encryption file system.
+     Technical Report CUCS-021-98, Computer Sci-
+     ence Department, Columbia University, June 1998.
+     www.cs.columbia.edu/˜library.
+[28] E. Zadok and J. Nieh. FiST: A Language for Stack-
+     able File Systems. In Proceedings of the Annual
+     USENIX Technical Conference, pages 55–70, San
+     Diego, CA, June 2000.
+
+
+
+
+                                                           12
+

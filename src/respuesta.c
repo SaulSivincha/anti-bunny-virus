@@ -1,78 +1,102 @@
-#include <stdio.h>
+#include <errno.h>
+#include <pwd.h>
 #include <signal.h>
-#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
+
 #include "respuesta.h"
 
 static char ruta_archivo_log[512] = "logs/eventos.log";
+static unsigned int uid_laboratorio = (unsigned int)-1;
+static int pgid_autorizado = -1;
+static int segundos_gracia = 2;
+static char ruta_pgid_autorizado[512];
 
 static void asegurar_directorio_log(const char *ruta_log) {
-    char directorio[512];
-    char *barra;
+    char directorio[512], *barra;
     snprintf(directorio, sizeof(directorio), "%s", ruta_log);
     barra = strrchr(directorio, '/');
-    if (barra != NULL) {
-        *barra = '\0';
-        if (*directorio != '\0') mkdir(directorio, 0755);
+    if (barra != NULL) { *barra = '\0'; if (*directorio != '\0') mkdir(directorio, 0755); }
+}
+static void marca(char salida[26]) {
+    time_t ahora = time(NULL); struct tm *tm_info = localtime(&ahora);
+    strftime(salida, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+}
+static void escribir(FILE *archivo, const char *linea) { fputs(linea, stdout); if (archivo != NULL) fputs(linea, archivo); }
+
+void configurar_logger(const char *ruta_log) {
+    FILE *archivo; char tiempo[26];
+    snprintf(ruta_archivo_log, sizeof(ruta_archivo_log), "%s", ruta_log);
+    asegurar_directorio_log(ruta_archivo_log); archivo = fopen(ruta_archivo_log, "a");
+    if (archivo != NULL) { marca(tiempo); fprintf(archivo, "%s INFO anti-bunny-virus iniciado\n", tiempo); fclose(archivo); }
+}
+
+void configurar_laboratorio(const char *usuario, int pgid, const char *ruta_pgid, int gracia) {
+    struct passwd *cuenta = getpwnam(usuario);
+    uid_laboratorio = cuenta != NULL ? (unsigned int)cuenta->pw_uid : (unsigned int)-1;
+    pgid_autorizado = pgid;
+    if (ruta_pgid != NULL) snprintf(ruta_pgid_autorizado, sizeof(ruta_pgid_autorizado), "%s", ruta_pgid);
+    segundos_gracia = gracia > 0 ? gracia : 2;
+}
+
+static void refrescar_pgid_autorizado(void) {
+    char linea[64];
+    FILE *archivo;
+    if (ruta_pgid_autorizado[0] == '\0') return;
+    archivo = fopen(ruta_pgid_autorizado, "r");
+    if (archivo == NULL) return;
+    if (fgets(linea, sizeof(linea), archivo) != NULL) {
+        int pgid = atoi(linea);
+        if (pgid > 1) pgid_autorizado = pgid;
+    }
+    fclose(archivo);
+}
+
+static int puede_actuar(const Alerta *a) {
+    return a->accionable && strcmp(a->severidad, "critica") == 0 && a->pid > 1 && a->pgid > 1 &&
+           a->pgid == pgid_autorizado && a->uid == uid_laboratorio;
+}
+
+static void terminar_grupo(FILE *archivo, const Alerta *a, const char *tiempo) {
+    char linea[768];
+    refrescar_pgid_autorizado();
+    if (!puede_actuar(a)) {
+        snprintf(linea, sizeof(linea), "%s INFO accion=denegada pid=%d pgid=%d motivo=politica_laboratorio\n", tiempo, a->pid, a->pgid);
+        escribir(archivo, linea); return;
+    }
+    if (kill(-a->pgid, SIGTERM) != 0) {
+        snprintf(linea, sizeof(linea), "%s ERROR accion=SIGTERM_GRUPO pgid=%d errno=%d\n", tiempo, a->pgid, errno);
+        escribir(archivo, linea); return;
+    }
+    snprintf(linea, sizeof(linea), "%s INFO accion=SIGTERM_GRUPO pgid=%d gracia_s=%d\n", tiempo, a->pgid, segundos_gracia);
+    escribir(archivo, linea); sleep((unsigned int)segundos_gracia);
+    if (kill(-a->pgid, 0) == 0 || errno == EPERM) {
+        if (kill(-a->pgid, SIGKILL) == 0) {
+            snprintf(linea, sizeof(linea), "%s INFO accion=SIGKILL_GRUPO pgid=%d\n", tiempo, a->pgid);
+        } else {
+            snprintf(linea, sizeof(linea), "%s ERROR accion=SIGKILL_GRUPO pgid=%d errno=%d\n", tiempo, a->pgid, errno);
+        }
+        escribir(archivo, linea);
+    } else {
+        snprintf(linea, sizeof(linea), "%s INFO accion=grupo_finalizado pgid=%d\n", tiempo, a->pgid);
+        escribir(archivo, linea);
     }
 }
 
-void configurar_logger(const char* ruta_log) {
-    // Copiar la ruta a nuestra variable estática
-    strncpy(ruta_archivo_log, ruta_log, sizeof(ruta_archivo_log) - 1);
-    ruta_archivo_log[sizeof(ruta_archivo_log) - 1] = '\0';
-    asegurar_directorio_log(ruta_archivo_log);
-    // Registrar el mensaje de inicio del daemon en el log (Criterio de Aceptación)
-    FILE* archivo = fopen(ruta_archivo_log, "a");
-    if (archivo != NULL) {
-        time_t t = time(NULL);
-        struct tm *tm_info = localtime(&t);
-        char marca_tiempo[26];
-        
-        strftime(marca_tiempo, sizeof(marca_tiempo), "%Y-%m-%d %H:%M:%S", tm_info);
-        fprintf(archivo, "%s INFO anti-bunny-virus iniciado en modo=alerta\n", marca_tiempo);
-        fclose(archivo);
+void responder(Alerta *alertas, int n_alertas, const char *modo) {
+    FILE *archivo = fopen(ruta_archivo_log, "a");
+    for (int i = 0; i < n_alertas; ++i) {
+        char tiempo[26], linea[1024]; marca(tiempo);
+        snprintf(linea, sizeof(linea), "%s WARNING severidad=%s tipo=%s pid=%d pgid=%d descripcion=\"%s\" evidencia=\"%s\" modo=%s\n",
+                 tiempo, alertas[i].severidad, alertas[i].tipo, alertas[i].pid, alertas[i].pgid,
+                 alertas[i].descripcion, alertas[i].evidencia, modo);
+        escribir(archivo, linea);
+        if (strcmp(modo, "terminar_lab") == 0) terminar_grupo(archivo, &alertas[i], tiempo);
     }
-}
-
-void responder(Alerta* alertas, int n_alertas, const char* modo) {
-    time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
-    char marca_tiempo[26];
-    
-    // Formatear fecha y hora igual al formato estándar de logs
-    strftime(marca_tiempo, sizeof(marca_tiempo), "%Y-%m-%d %H:%M:%S", tm_info);
-
-    // Abrir el archivo en modo append (agregar al final)
-    FILE* archivo = fopen(ruta_archivo_log, "a");
-
-    for (int i = 0; i < n_alertas; i++) {
-        // Impresión obligatoria en consola
-        printf("%s WARNING tipo=%s descripcion=\"%s\" evidencia=\"%s\" modo=%s\n",
-               marca_tiempo, alertas[i].tipo, alertas[i].descripcion, alertas[i].evidencia, modo);
-
-        // Guardar la alerta en el log persistente
-        if (archivo != NULL) {
-            fprintf(archivo, "%s WARNING tipo=%s descripcion=\"%s\" evidencia=\"%s\" modo=%s\n",
-                    marca_tiempo, alertas[i].tipo, alertas[i].descripcion, alertas[i].evidencia, modo);
-        }
-
-        // Estructura para el soporte del modo automático
-        if (strcmp(modo, "automatico") == 0) {
-            if (alertas[i].pid > 1) {
-                if (kill(alertas[i].pid, SIGTERM) == 0) {
-                    printf("%s INFO pid=%d accion=SIGTERM\n", marca_tiempo, alertas[i].pid);
-                } else {
-                    perror("No se pudo terminar el proceso sospechoso");
-                }
-            }
-        }
-    }
-
-    if (archivo != NULL) {
-        fclose(archivo);
-    }
+    if (archivo != NULL) fclose(archivo);
 }

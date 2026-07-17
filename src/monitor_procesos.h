@@ -4,10 +4,15 @@
 typedef struct {
     int pid;
     int ppid;
+    int pgid;
+    unsigned long long starttime;
+    unsigned int uid;
     char nombre[256];
     char usuario[256];
     char ruta[512];
     int hijos;
+    int hijos_nuevos;
+    float hijos_nuevos_s;
 } ProcesoInfo;
 
 int obtener_procesos(ProcesoInfo *lista, int max_procesos);

@@ -1,51 +1,51 @@
-# Estrategia anti-bunny-virus
+# Estrategia del sistema anti-bunny-virus
 
-## Que es un bunny-virus
+## Problema
 
-Un **bunny-virus** es un ataque de agotamiento de recursos. Su comportamiento se asocia con los ataques tipo **rabbit/wabbit** o **fork bomb**, donde un proceso se replica o genera actividad de forma acelerada hasta consumir memoria, CPU, procesos disponibles o almacenamiento.
+Un *bunny-virus* se aborda aquí como un ataque de agotamiento de recursos: un proceso puede proliferar, consumir memoria o CPU, o hacer crecer un fichero hasta degradar la disponibilidad de Linux. El riesgo no es solamente perder espacio o rendimiento; cuando los recursos se agotan, ya puede no ser posible ejecutar la orden de recuperación.
 
-Cuando el sistema se queda sin recursos, deja de responder correctamente: no acepta comandos, se vuelve lento o queda paralizado. Por eso, el objetivo principal no es solo eliminar archivos despues del ataque, sino **detectar el comportamiento anomalo antes de que el sistema colapse**.
+El proyecto no busca reconocer malware por firma ni afirmar que todo fichero grande es malicioso. Busca detectar **comportamiento anómalo sostenido** y contenerlo de manera trazable antes del colapso.
 
-## Justificacion desde el estado del arte
+## Pregunta e hipótesis
 
-Los articulos revisados muestran que este tipo de amenaza se entiende mejor como un problema de **comportamiento y agotamiento de recursos**, no como un virus que necesariamente pueda identificarse por nombre.
+**Pregunta de investigación.** ¿Un monitor en C para Linux que use tasas temporales de procesos, recursos y crecimiento de archivos puede detectar de forma temprana escenarios controlados de agotamiento y contener de forma segura el proceso atribuible?
 
-Los trabajos sobre **fork bomb** indican que el ataque puede detectarse observando la creacion rapida de procesos y el consumo anormal de recursos. Los trabajos sobre **resource exhaustion** refuerzan que la defensa debe anticiparse al agotamiento total, midiendo el crecimiento del consumo en ventanas de tiempo.
+**Hipótesis.** Frente a reglas basadas solo en un umbral instantáneo, combinar tasas medidas en ventanas temporales, persistencia de la anomalía y al menos dos señales relacionadas reducirá alertas falsas y permitirá detectar los simuladores antes de su límite seguro.
 
-Por eso, la estrategia mas adecuada para este proyecto es una deteccion basada en comportamiento.
+La hipótesis se evaluará con tiempo de detección, recursos consumidos antes de responder, tasa de falsos positivos y sobrecarga del monitor. No se afirmará protección contra malware real fuera de los escenarios evaluados.
 
-## Estrategia propuesta
+## Fundamento en la literatura
 
-El sistema anti-bunny-virus funcionara como un monitor en tiempo real. Su tarea sera observar procesos, memoria y archivos para detectar crecimiento anormal.
+- Pennington et al. muestran que tamaño, tiempos y modificaciones de archivos son señales útiles de intrusión; esto justifica registrar bytes/s y metadatos.
+- Patil et al. muestran la utilidad de políticas en tiempo de acceso, pero también el coste de monitorizar intensivamente; esto justifica limitar el alcance a directorios configurados y medir sobrecarga.
+- Yang et al. y Gierlings et al. muestran que aislar o limitar recursos puede preservar la disponibilidad ante *fork bombs*; esto justifica una respuesta gradual, no una terminación ciega.
 
-La estrategia se divide en cuatro partes:
+Las revisiones y transcripciones están en `estado_del_arte/<paper>/`.
 
-1. **Monitoreo de procesos**
+## Alcance del producto final
 
-   Se registrara cuantos procesos crea cada proceso padre. Si un proceso empieza a generar demasiados hijos en poco tiempo, sera marcado como sospechoso.
+El monitor deberá:
 
-2. **Monitoreo de memoria y CPU**
+1. observar `/proc` para construir relaciones PID–PPID y medir CPU/RSS;
+2. medir por intervalo la tasa de creación de hijos, crecimiento de memoria y crecimiento de archivos en bytes/s;
+3. identificar el fichero de mayor crecimiento dentro del directorio vigilado;
+4. intentar atribuir un fichero anómalo a procesos que lo tengan abierto mediante `/proc/<pid>/fd`;
+5. emitir alertas con evidencia suficiente para reproducir la decisión;
+6. aplicar una respuesta gradual y segura en laboratorio.
 
-   Se medira el consumo de memoria y CPU por proceso. Un crecimiento brusco o sostenido indicara posible agotamiento de recursos.
+Quedan fuera del alcance: clasificación por firma, protección de todo el kernel, análisis de tráfico de red y garantía de detener malware no atribuible.
 
-3. **Monitoreo de archivos**
+## Política de decisión y respuesta
 
-   Se observara el tamano de los ficheros y su tasa de crecimiento. Si un archivo empieza a llenarse demasiado rapido, el sistema intentara identificar que proceso lo esta modificando.
+Una señal aislada crea una alerta informativa. Una alerta crítica exige persistencia durante una ventana configurada o correlación de dos señales del mismo proceso o árbol. La respuesta se ordena por riesgo:
 
-4. **Respuesta temprana**
+1. `alerta`: registrar y mostrar evidencia; modo por defecto.
+2. `pausa`: `SIGSTOP` únicamente para un PID atribuible, no protegido y en laboratorio.
+3. `terminar`: `SIGTERM` solo tras cumplir la política crítica y con lista de exclusión.
+4. `cgroup` (extensión): limitar procesos/CPU/memoria del grupo en lugar de terminarlo.
 
-   Cuando se detecte un comportamiento sospechoso, el sistema podra generar una alerta, registrar el evento y detener o aislar el proceso responsable antes de que el sistema quede paralizado.
+Nunca se actuará automáticamente sobre PID 1, procesos del kernel, el propio monitor ni procesos sin evidencia atribuible.
 
-## Criterio de deteccion
+## Criterio de éxito
 
-El sistema no dependera de firmas ni nombres especificos de virus. Se basara en indicadores como:
-
-- cantidad de procesos creados por segundo;
-- crecimiento de memoria por proceso;
-- uso elevado y sostenido de CPU;
-- crecimiento rapido de archivos;
-- relacion entre proceso sospechoso y archivo modificado.
-
-## Finalidad
-
-La finalidad del proyecto es prevenir que un ataque tipo bunny-virus deje el sistema inutilizable. Para lograrlo, el programa debe actuar antes del colapso, detectando patrones de replicacion, consumo excesivo y crecimiento anormal de ficheros.
+El proyecto estará terminado cuando los tres simuladores controlados sean detectados antes de su límite, la carga normal no produzca alertas críticas, cada decisión quede registrada con evidencia y `make && make test` permita reproducir el sistema y sus pruebas.
