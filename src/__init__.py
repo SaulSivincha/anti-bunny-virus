@@ -1,1 +1,0 @@
-"""Anti-bunny-virus package."""

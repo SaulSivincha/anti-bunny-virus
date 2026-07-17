@@ -2,60 +2,61 @@
 
 ## Preparacion
 
-Instalar dependencias:
+El proyecto se ejecuta en Linux y requiere un compilador C compatible con C11 y `make`.
 
 ```bash
-pip install psutil
+make
+make test
 ```
 
-Ejecutar el monitor:
-
-```bash
-python src/main.py
-```
+El primer comando genera el monitor `anti-bunny-virus` y los tres simuladores dentro de `simuladores/`.
 
 ## Escenario 1: ejecucion normal
 
-Ejecutar el monitor sin simuladores durante unos segundos.
+En una terminal, iniciar el monitor:
 
-Resultado esperado: no aparecen alertas criticas.
+```bash
+./anti-bunny-virus
+```
+
+Dejarlo ejecutarse durante unos segundos. No deben aparecer alertas criticas. Presionar `Ctrl+C` para cerrar el monitor de forma segura.
 
 ## Escenario 2: procesos hijos
 
-En otra terminal:
+Con el monitor activo, ejecutar en otra terminal:
 
 ```bash
-python simuladores/simulador_fork_bomb.py
+./simuladores/simulador_fork_bomb
 ```
 
-Resultado esperado: alerta por cantidad alta de procesos hijos.
+El simulador crea como maximo 25 hijos temporales y espera a que terminen. Debe producirse una alerta de procesos para su proceso padre.
 
 ## Escenario 3: consumo de memoria
 
-En otra terminal:
+Con el monitor activo, ejecutar:
 
 ```bash
-python simuladores/simulador_memoria.py
+./simuladores/simulador_memoria
 ```
 
-Resultado esperado: alerta por consumo de memoria.
+El simulador reserva hasta 320 MB de forma gradual y libera la memoria al finalizar. Debe producirse una alerta de recursos al superar el umbral de memoria configurado.
 
 ## Escenario 4: crecimiento de archivo
 
-En otra terminal:
+Con el monitor activo, ejecutar:
 
 ```bash
-python simuladores/simulador_archivo.py
+./simuladores/simulador_archivo
 ```
 
-Resultado esperado: alerta por crecimiento acelerado de archivo en `/tmp/anti_bunny_demo`.
+El simulador escribe un maximo de 16 MB en `/tmp/anti_bunny_demo/archivo_crecimiento_demo.bin`. Debe producirse una alerta por crecimiento acelerado de archivo.
 
 ## Evidencia
 
-Revisar:
+Revisar las alertas y el registro persistente:
 
 ```bash
 cat logs/eventos.log
 ```
 
-Cada alerta debe indicar tipo, PID o archivo, valor observado y accion tomada.
+Cada alerta incluye tipo, evidencia y modo de respuesta. El modo predeterminado es `alerta`; no termina procesos. El modo `automatico` solo debe habilitarse en un entorno controlado.
