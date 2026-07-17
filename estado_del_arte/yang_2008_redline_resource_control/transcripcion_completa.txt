@@ -1,0 +1,1020 @@
+   Redline: First Class Support for Interactivity in Commodity Operating Systems
+
+
+          Ting Yang            Tongping Liu         Emery D. Berger                                    Scott F. Kaplan†                   J. Eliot B. Moss
+       tingy@cs.umass.edu    tonyliu@cs.umass.edu    emery@cs.umass.edu                              sfkaplan@cs.amherst.edu              moss@cs.umass.edu
+
+
+                Dept. of Computer Science                    † Dept. of Mathematics and Computer Science
+
+            University of Massachusetts Amherst                                                 Amherst College
+                 Amherst, MA 01003-9264                                                      Amherst, MA 01002-5000
+
+                            Abstract                                                                       Impact of parallel kernel compilation on mplayer
+                                                                                            35
+                                                                                                     Linux CFS
+      While modern workloads are increasingly interactive                                               Redline
+                                                                                            30
+   and resource-intensive (e.g., graphical user interfaces,
+
+
+
+
+                                                                  Frames per Second (fps)
+   browsers, and multimedia players), current operating sys-                                25
+
+   tems have not kept up. These operating systems, which                                    20
+   evolved from core designs that date to the 1970s and 1980s,
+                                                                                            15
+   provide good support for batch and command-line applica-
+   tions, but their ad hoc attempts to handle interactive work-                             10
+   loads are poor. Their best-effort, priority-based sched-
+                                                                                             5
+   ulers provide no bounds on delays, and their resource man-
+   agers (e.g., memory managers and disk I/O schedulers) are                                 0
+                                                                                                 0          200         400         600         800           1000
+   mostly oblivious to response time requirements. Pressure                                                           Elapsed Time (Seconds)
+   on any one of these resources can signiﬁcantly degrade ap-
+   plication responsiveness.                                      Figure 1: The frame rate of mplayer when performing
+      We present Redline, a system that brings ﬁrst-class sup-    a Linux kernel compiling using make -j32 on a standard
+   port for interactive applications to commodity operating       Linux 2.6 kernel and on the Redline kernel.
+   systems. Redline works with unaltered applications and
+   standard APIs. It uses lightweight speciﬁcations to or-
+                                                                     Unfortunately, existing general-purpose operating sys-
+   chestrate memory and disk I/O management so that they
+                                                                  tems do not provide adequate support for these modern
+   serve the needs of interactive applications. Unlike real-
+                                                                  applications. Current operating systems like Windows,
+   time systems that treat speciﬁcations as strict requirements
+                                                                  Linux, and Solaris were designed using standard resource
+   and thus pessimistically limit system utilization, Redline
+                                                                  management policies and algorithms, which in turn were
+   dynamically adapts to recent load, maximizing responsive-
+                                                                  not developed with interactivity in mind. While their CPU
+   ness and system utilization. We show that Redline deliv-
+                                                                  schedulers attempt to enhance interactive behavior, their
+   ers responsiveness to interactive applications even in the
+                                                                  memory managers and I/O managers focus on increasing
+   face of extreme workloads including fork bombs, memory
+                                                                  system throughput rather than reducing latency. This lack
+   bombs and bursty, large disk I/O requests, reducing appli-
+                                                                  of coordination between subsystems, and the fact that they
+   cation pauses by up to two orders of magnitude.
+                                                                  can work at cross purposes, means that pressure on any
+                                                                  resource can signiﬁcantly degrade application responsive-
+   1   Introduction                                               ness.
+   The enormous increases in processing power, memory size,          For example, a memory-intensive application can cause
+   storage capacity, and network bandwidth over the past          the system to evict pages from the graphical user interface,
+   two decades have led to a dramatic change in the rich-         making the system as a whole unresponsive. Similarly,
+   ness of desktop environments. Users routinely run highly-      disk-intensive applications can easily saturate I/O band-
+   graphical user interfaces with resource-intensive applica-     width, making applications like video players unusable.
+   tions ranging from video players and photo editors to web      Furthermore, while best-effort, priority-based schedulers
+   browsers, complete with embedded Javascript and Flash          are a good match for batch-style applications, they provide
+   applets.                                                       limited support for ensuring responsiveness. Activities that
+
+
+
+USENIX Association                            8th USENIX Symposium on Operating Systems Design and Implementation                                                    73
+     strain the resources of a system—image or video process-                 spec related                  Specification            specs
+     ing, working with large data ﬁles or ﬁle systems, or switch-               sys. calls                  Management
+     ing frequently between a number of active applications—
+     are likely to cause one of the resource managers to under-                                             spec loader
+                                                                                                                     interactive tasks
+
+                                                                               best-effort
+     allocate resources to some interactive tasks, making those
+                                                                                             reject
+     tasks respond poorly.                                                                            Admission Control
+                                                                                                                                         load
+        As an example, Figure 1 shows the frame rate of                                                     accept                        info
+     mplayer, a movie player, while a Linux kernel compila-                                                              revoke
+                                                                                               CPU                     reactivate     Load
+     tion, invoked using make -j32, is performed using both a
+                                                                                             Scheduler                cpu usage      Monitor
+     standard Linux 2.6.x kernel and our Redline kernel. For
+     the standard kernel, the compilation substantially degrades                                  task                              memory
+                                                                                              information                            usage
+     the interactivity of the movie player, rendering the video
+     unwatchable. Worse, the entire GUI becomes unrespon-                   I/O Management                       Memory Management
+     sive. Similar behavior occurs on Windows when watching
+     a video using the Windows Media Player while running a                                    Figure 2: The Redline system.
+     virus scan in the background.
+
+     Contributions                                                  ing applications. This combination makes Redline practical
+     We present Redline, a system that integrates resource man-     for use in commodity operating system environments.
+     agement (memory management and disk I/O scheduling)               We have implemented Redline as an extension to the
+     with the CPU scheduler, orchestrating these resource man-      Linux kernel (Section 7). We present the results of an ex-
+     agers to maximize the responsiveness of interactive appli-     tensive empirical evaluation comparing Redline with the
+     cations.                                                       standard Linux kernel (Section 8). These results demon-
+        Redline relies on lightweight speciﬁcations to provide      strate Redline’s effectiveness in ensuring the responsive-
+     enough information about the response time requirements        ness of interactive applications even in the face of extreme
+     of interactive applications. These speciﬁcations, which ex-    workloads, including bursty I/O-heavy background pro-
+     tend Rialto’s CPU speciﬁcations [15], give an estimate of      cesses, fork bombs, and memory bombs.
+     the resources required by an application over any period
+     in which they are active. These speciﬁcations are concise,     2     Redline Overview
+     consisting of just a few parameters (Section 3), and are       This paper focuses on Redline’s support for interactive and
+     straightforward to generate: a graduate student was able to    best-effort tasks:
+     write speciﬁcations for a suite of about 100 applications—
+     including Linux’s latency-sensitive daemons—in just one            1. Interactive (Iact): response-time sensitive tasks that
+     day. In an actual deployment, we expect these speciﬁca-               provide services in response to external requests or
+     tions to be provided by application developers.                       events. These include not only tasks that interact with
+        Each resource manager uses the speciﬁcations to in-                users, but also tasks that serve requests from other
+     form its decisions. Redline extends a standard time-sharing           tasks, such as kernel daemons;
+     CPU scheduler with an earliest deadline ﬁrst (EDF)-based
+     scheduler [18] that uses these speciﬁcations to schedule in-       2. Best-effort (BE): tasks whose performance is not crit-
+     teractive applications (Section 6). Redline’s memory man-             ical, such as virus scanners.
+     ager protects the working sets of interactive applications,
+     preferentially evicting pages from non-interactive applica-       Figure 2 presents an overview of the Redline system. At
+     tions and further reducing the risk of paging by maintaining   the top, the speciﬁcation management allows a system ad-
+     a pool of free pages available only to interactive tasks—a     ministrator to provide speciﬁcations for a set of important
+     rate-controlled memory reserve (Section 4). Redline’s disk     applications. Redline loads each speciﬁcation from a ﬁle
+     I/O manager avoids pauses in interactive applications by       whenever the corresponding application is launched. Red-
+     dynamically prioritizing these tasks according to their need   line treats any application without a speciﬁcation as a best-
+     to complete the I/O operation and resume execution on the      effort task.
+     CPU (Section 5).                                                  Whenever a new task is launched, Redline performs ad-
+        Unlike real time systems that sacriﬁce system utilization   mission control to determine whether the system can ac-
+     in exchange for strict guarantees [15, 16], Redline provides   commodate it. Speciﬁcally, Redline dynamically tracks the
+     strong isolation for interactive applications while ensuring   load consumed by the active interactive tasks, and then uses
+     high system utilization. Furthermore, Redline works with       the new task’s speciﬁcation to determine whether the re-
+     standard APIs and does not require any alterations to exist-   sources are available to support it as an interactive task.
+
+
+
+74          8th USENIX Symposium on Operating Systems Design and Implementation                                                     USENIX Association
+       Once the admission control mechanism accepts a task,                             exec()                       fork()
+
+    Redline propagates its speciﬁcation to the memory man-                                                        copy spec
+                                                                                  parent has spec?    N
+    ager, the disk I/O manager, and the CPU scheduler. The                                                      from its parent
+    memory manager uses the speciﬁcation to protect the task’s                           Y
+    working set, preferentially evicting either non-working-set                   find a match spec        Y      call exec()
+                                                                                   in /etc/spec.tab? N            within 1ms?
+    pages or pages from best-effort tasks. It also maintains a                                                          N
+                                                                                       Y
+    specially controlled pool of free pages for interactive tasks,                                             parent has the
+                                                                                     load spec
+    thus isolating them from best-effort tasks that allocate ag-                                           Y inheritable flag set?
+    gressively. The disk I/O management assigns higher pri-                                                             N
+    orities to interactive tasks, ensuring that I/O requests from                 To admission test              Launch as BE
+    interactive tasks ﬁnish as quickly as possible. Finally, Red-
+    line’s extended CPU scheduler provides the required CPU                      Figure 3: Loading speciﬁcations in Redline
+    resources for the interactive tasks.
+       Unlike real-time systems, which pessimistically reject
+    jobs if the combined speciﬁcations would exceed system               the speciﬁcation may be revoked when the system is over-
+    capacity, Redline optimistically accepts new jobs based on           loaded. A speciﬁcation can also contain two optional ﬁelds:
+    the actual usage of the system, and adapts to overload if            π is the memory protection period in seconds (see Sec-
+    necessary. When Redline detects an overload—that the in-             tion 4) and io is the I/O priority (see Section 5).
+    teractive tasks are trying to consume more resources than                For example, here is the speciﬁcation for mplayer, an
+    are available—then the load monitor selects a victim to              interactive movie player:
+    downgrade, making it a best-effort task. This victim is                          �/usr/bin/mplayer:Iact:5:30:IR:-:-�
+    the task that acts least like an interactive task (i.e., it is the   This speciﬁcation indicates that mplayer is an interactive
+    most CPU-intensive). This strategy allows other interactive          task that reserves 5 ms out of each 30 ms period, whose
+    tasks to continue to meet their response-time requirements.          speciﬁcation is inheritable, that its interactive status can be
+    Whenever more resources become available, Redline will               revoked if necessary, and whose memory protection period
+    promote the downgraded task, again making it interactive.            and I/O priority are chosen by Redline automatically.
+       By integrating resource management with appropriate                   Setting speciﬁcations: We derived speciﬁcations for a
+    admission and load control, Redline effectively maintains            range of applications by following several simple rules. Be-
+    interactive responsiveness even under heavy resource con-            cause most administrative tools are short-lived, reserving a
+    tention.                                                             small percentage of the CPU bandwidth over hundreds of
+                                                                         milliseconds is sufﬁcient to ensure responsiveness. While
+    3    Redline Speciﬁcations                                           most kernel threads and daemons are not CPU intensive,
+    Under Redline, each interactive application (e.g., a text ed-        they are response-time sensitive, so their reservation period
+    itor, a movie player, or a web browser) must have a speci-           should be in the tens of milliseconds. Finally, for interac-
+    ﬁcation to ensure its responsiveness. However, the applica-          tive applications like a movie player, the reservation period
+    tion itself depends on other tasks that must also be respon-         should be around 30 ms to ensure 30 frames per second,
+    sive. Speciﬁcally, the graphical user interface (e.g., the X         which implies that the X server and window/desktop man-
+    Windows server, the window/desktop manager) comprise a               ager should also use the same reservation period.
+    set of tasks that must be given speciﬁcations to ensure that             We found that setting speciﬁcations was straightforward.
+    the user interface remains responsive. Similarly, speciﬁca-          It took one graduate student a single work day to manually
+    tions for a range of kernel threads and daemons allow Red-           generate a set of speciﬁcations for about 100 applications in
+    line to ensure that the system remains stable. Finally, speci-       a Linux system using the K Desktop Environment (KDE).
+    ﬁcations for a range of administrative tools (e.g., bash, top,       Because this speciﬁcation ﬁle is portable, speciﬁcations for
+    ls, and kill) make it possible to manage the system even un-         a wide variety of applications could easily be shipped with
+    der extreme load.                                                    an operating system distribution.
+        A speciﬁcation in Redline is an extension of CPU reser-              Loading speciﬁcations: Redline stores its speciﬁcations
+    vations [15] that allow an interactive task to reserve C mil-        in a ﬁle (/etc/spec/spec.tab). An interactive task either uses
+    liseconds of computation time out of every T milliseconds.           the speciﬁcation loaded from this ﬁle when exec() is in-
+    A speciﬁcation consists of the following ﬁelds:                      voked, or it adopts the one inherited from its parent. Fig-
+                �pathname:type:C:T :ﬂags:π:io�                           ure 3 shows how Redline loads the speciﬁcation for each
+    The ﬁrst ﬁeld is the pathname to the executable, and the             task.
+    second ﬁeld is its type (usually Iact). Two important ﬂags               In practice, most tasks that invoke exec() do so shortly
+    include I, which determines whether the speciﬁcation can             after being forked. Therefore, when a new task is forked,
+    be inherited by a child process, and R, which indicates if           Redline gives it a 1 ms execution window to perform an
+
+
+
+USENIX Association                                 8th USENIX Symposium on Operating Systems Design and Implementation               75
+     exec(). If it does so, and if the parent task is itself an inter-   swaps performed by the system, irrespective of how any
+     active task, then Redline searches the speciﬁcation ﬁle for         one process performs.
+     an entry with a matching path name. If a match is found,               For an interactive task to remain responsive, a VMM
+     the speciﬁcation provided is adopted for this new task.             must keep its working set—those pages that are currently
+        If there is no entry for the application, or if the task does    in active use—resident in memory. Under gLRU, a portion
+     not invoke exec() during that initial 1 ms window, then             of a task’s working set may be evicted from main mem-
+     Redline examines whether the task should inherit its parent         ory if the system-wide demand for main memory is large
+     task’s speciﬁcation. If that speciﬁcation is marked as in-          enough, and if a task does not reference its pages rapidly
+     heritable, then it is applied to the new task. Under all other      enough. Under this memory pressure, interactive tasks can
+     circumstances, the new task is classiﬁed as best-effort.            quickly become non-responsive.
+        If the new task’s speciﬁcation classify it as interactive,          Under the Redline VMM, each interactive task can spec-
+     then Redline will submit the task to admission control. If          ify a memory protection period π. The VMM will evict
+     Redline determines that the load is low enough to support           a page only if it has not been referenced for at least π
+     the resource needs of this new interactive task, then it is         seconds—that is, if the page has expired. By default,
+     admitted; otherwise, it is demoted to be a best-effort task.        π = 30 × 60, or 30 minutes if π is not supplied by the spec-
+        Note that in the absence of any speciﬁcations, all tasks         iﬁcation. This default period requires that a user ignore an
+     become best-effort tasks, and Redline acts like a standard          interactive application for a substantial period of time be-
+     system without special support for interactivity.                   fore the VMM can evict its working set.
+                                                                            The Redline VMM handles the pages of interactive tasks
+     4   Redline Virtual Memory Management                               and best-effort tasks differently. If page reclamation is
+        The goal of existing virtual memory managers (VMM)               caused by a best-effort task, then the VMM reclaims pages
+     in commodity operating systems is to maximize overall               using the system’s default VMM mechanism, but with a
+     system throughput. Most VMM’s employ “use-it-or-lose-               slight modiﬁcation: only pages belonging to best-effort
+     it” policies under which memory referencing speed deter-            tasks and expired pages belonging to interactive tasks may
+     mines allocation: the more pages a task references per sec-         be reclaimed. Among these two types of pages eligible
+     ond, the larger its main memory allocation.                         for reclamation, the VMM selects the least recently used
+        A task that blocks on I/O is more vulnerable to losing its       pages.
+     allocation and then later being forced to page-swap when it            However, if page reclamation is caused by an interactive
+     awakens. Because typical VMM’s do not isolate each task’s           task, then the VMM ﬁrst tries to use the rate-controlled
+     allocation, a single memory-intensive task can “steal” the          memory reserve (described in more detail below). If this
+     allocations of other tasks that are not actively using their        reserve provides insufﬁcient space, reclamation proceeds
+     pages, causing the other tasks to page-swap more often.             as above for best-effort tasks, reclaiming not recently used
+     Worse, page swapping itself is the kind of blocking I/O op-         pages from best-effort tasks and expired pages from inter-
+     eration that can cause a task to lose more of its allocation,       active tasks. If this attempt at reclamation is also insuf-
+     exacerbating the problem.                                           ﬁcient, the VMM then reclaims more recently used pages
+        Because interactive tasks routinely block on user input,         from best-effort tasks. If even this aggressive approach is
+     they are especially susceptible to allocation loss. If an in-       insufﬁcient, then there is not enough memory to cache the
+     teractive task has an insufﬁcient allocation, its execution is      working sets of all of the interactive tasks. In this case, the
+     likely to be interrupted by lengthy page-swap operations,           VMM demotes some interactive tasks to best-effort tasks.
+     leaving it unresponsive, and making it even more suscepti-          After taking this step, the VMM repeats the above steps,
+     ble to further allocation loss.                                     attempting to reclaim sufﬁcient main memory space.
+        To address this problem, the Redline VMM is designed                Rate-controlled reserve: The Linux VMM forces the
+     to keep interactive tasks responsive even after blocking on         allocating task to reclaim pages when the amount of free
+     input. Redline uses three mechanisms to achieve these               memory falls below a threshold. This approach is not desir-
+     goals: protecting the working sets of interactive tasks, us-        able for interactive tasks because, should such a task fault,
+     ing a rate-controlled memory reserve, and setting speed-            it would block during the potentially lengthy reclamation
+     bump pages.                                                         process. Instead, the Redline VMM maintains a small free-
+        Protecting working sets: The Linux VMM uses a page               memory reserve (about 8 MB in our implementation) for
+     replacement algorithm that approximates a global least re-          interactive tasks, and controls the rate at which this reserve
+     cently used (gLRU) policy. Pages are approximately or-              is consumed. Although an interactive task still may block
+     dered by recency of use, without consideration of the task          during reclamation, the reserve makes that situation signif-
+     to which each page belongs. The VMM cleans and selects              icantly less likely.
+     for reclamation the least-recently used pages. The implicit            The Redline VMM gives each interactive task a reserve
+     goal of this policy is to minimize the total number of page         budget b (the default is 256 pages) and records the time t f
+
+
+
+76          8th USENIX Symposium on Operating Systems Design and Implementation                                       USENIX Association
+    when the ﬁrst page in its budget is consumed. For each             that is the default for most distributions. Like any journal-
+    page consumed from the reserve, the Redline VMM re-                ing ﬁle system, ext3 commits its updates as atomic transac-
+    duces the budget of the consuming task and then triggers a         tions, each of which writes a group of cached, dirty pages
+    kernel thread to reclaim pages in background if necessary.         along with their new metadata. Its implementation is de-
+    We do not want any one task to quickly exhaust the reserve         signed to maximize system-wide throughput, sometimes to
+    and affect other tasks, so the rate at which a task consumes       the detriment of CPU scheduling goals. We describe here
+    reserved pages should not be faster than the system can re-        a particular problem with this ﬁle system’s implementation
+    claim them. Therefore, the Redline VMM charges each re-            that Redline ﬁxes. Although this particular problem is spe-
+    served page a cost c that is roughly the overhead of one disk      ciﬁc to Linux’s ext3, it is representative of the way in which
+    access operation (5 ms in Redline). When a task expends            any OS component that manages system resources can un-
+    its budget, the VMM evaluates the inequality t f + bc < t,         dermine interactivity.
+    where t is the current time. If the inequality is true, then the      Consider two tasks: an interactive task Pi , and a best-
+    VMM adds b to the task’s budget. If the inequality is false,       effort task Pbe , which simultaneously use the write() system
+    the task is consuming reserved pages too quickly. Thus, the        call to save data to some ﬁle on the same ext3 ﬁle system.
+    VMM prevents the task from using the reserve until b pages         These system calls will not immediately initiate disk ac-
+    are reclaimed or the reserve resumes its full capacity. We         tivity. Instead, the data written via this mechanism will
+    show the effect of this limited isolation between interactive      be buffered as a set of dirty pages in the ﬁle system cache.
+    tasks Section 8.                                                   Critically, these pages will also be added to a single, global,
+       Setting speed-bump pages: A VMM can only reclaim                compound transaction by ext3. This transaction will thus
+    a clean (unmodiﬁed) page; dirty (modiﬁed) pages must               contain dirty pages from any ﬁle written by any task, in-
+    be copied to the backing store, thus cleaning them, before         cluding pages written by both Pi and Pbe .
+    they can be reclaimed. Sometimes, a best-effort task may              Consider the case that Pbe writes a large amount of data
+    dirty pages faster than the VMM can clean them, thus pre-          through write(), while Pi writes a small amount. Further-
+    venting the VMM from reclaiming those pages. If enough             more, after both tasks have performed these write() oper-
+    such pages are unreclaimable, the VMM may be unable to             ations, suppose that Pi performs an fsync() system call to
+    cache the working sets of interactive tasks, thus allowing         ensure that its updates are committed to disk. Because of
+    one best-effort task to degrade interactivity.                     the compound transactions used by ext3, Pi will block until
+       To prevent best-effort tasks from “locking” memory in           both its own dirty pages and those of Pbe are written to disk.
+    this manner, whenever the Redline VMM is aggressively                 If the OS caches too many pages written by Pbe , then
+    searching for pages to reclaim (see above) and ﬁnds a page         the fsync() operation will force Pi to become noticeably
+    belonging to a best-effort task, it removes access permis-         unresponsive. This poor interaction between compound
+    sions to that page and marks it as a speed-bump page. If           transactions and fsync() occurs not only for ext3, but also
+    the task then references that page, execution traps into the       for ReiserFS[25]. Under Linux, the dirty threshold d is
+    kernel and the VMM notices that the referenced page is a           a system-wide parameter that determines what percentage
+    speed-bump. Before restoring access permissions and re-            of main memory may hold dirty pages—pages that may
+    suming execution, Redline suspends the task brieﬂy (e.g.,          belong to any task—before a disk transfer is initiated to
+    100 ms). The VMM therefore slows the task’s memory ref-            “clean” those pages. By default, d = 10%, making it pos-
+    erence rate, giving the VMM enough time to reclaim more            sible on a typical system for 100 MB to 200 MB of dirty
+    of its pages.                                                      pages to be cached and then written synchronously when
+                                                                       fsync() is called.
+    5   Redline Disk I/O Management                                       Redline takes a number of steps to limit this effect. First,
+       Like the VMM, the I/O manager of a general-purpose              Redline assigns different dirty thresholds for each type of
+    OS does not distinguish between interactive and best-effort        task (RT:10%, Iact:5%, BE:2MB). Redline further restricts
+    tasks. The policies that determine when and in what order          the threshold for best-effort tasks to a constant limit of 2
+    pages are read from and written to disk are designed to op-        MB, ensuring that no matter the size of main memory, best-
+    timize system throughput and are oblivious to CPU sched-           effort tasks cannot ﬁll the compound transactions of some
+    uler goals. This obliviousness can lead the I/O manager to         journaling ﬁle system with a large number of dirty pages.
+    schedule the requests for best-effort tasks before those of        Finally, Redline assigns the kernel task that manages write
+    interactive tasks in a way that substantially harms response       operations for each ﬁle system (in Linux, kjournald) to be
+    times.                                                             an interactive task, ensuring that time-critical transaction
+       To prevent this problem, the Redline I/O manager man-           operations are not delayed by other demands on the system.
+    ages key I/O events in both the ﬁle system and block device           Block device layer: Much like the journaling ﬁle sys-
+    layer so that responsive tasks can meet their deadlines.           tems described above, a block device layer may have uni-
+       Journaling: For Linux, ext3 is a journaling ﬁle system          ﬁed data structures, thresholds, or policies that are applied
+
+
+
+USENIX Association                               8th USENIX Symposium on Operating Systems Design and Implementation               77
+     irrespective of the tasks involved. These components are          priority to tasks with smaller T values. Redline organizes
+     typically designed to maximize system-wide throughput.            requests on per-task basis within the given class, allowing
+     However, the uniﬁcation performed by these components             the I/O scheduler provide some isolation between interac-
+     may harm the responsiveness of interactive tasks. Redline         tive tasks.
+     addresses these problems by handling these components of             Finally, CFQ, by default, does not guard against starva-
+     the block device layer on a per-task-type basis.                  tion. A task that submits a low-priority I/O request into
+         The Linux block device manager, dubbed Completely             one of the lesser classes may never have that request ser-
+     Fair Queuing (CFQ), contains a single request queue that          viced. Redline modiﬁes the I/O scheduler to ensure that all
+     stores I/O requests from which actual disk operations are         requests are eventually served, preventing this starvation.
+     drawn. Although this request queue internally organizes
+     I/O requests into classes (real-time, best-effort, and “idle”),   6     Redline CPU Scheduling
+     it has a maximum capacity that is oblivious to these classes.     The time-sharing schedulers used by commodity operating
+     When a new request is submitted, the congestion control           systems to manage both interactive and best-effort tasks
+     mechanism examines only whether the request queue is              neither protect against overload nor provide consistent in-
+     full, with no consideration of the requesting task’s class. If    teractive performance. To address these limitations, Red-
+     the queue is full, the submitting task blocks and is placed in    line employs admission control to protect it against over-
+     a FIFO-ordered wait-queue. Thus, a best-effort task might         load in most cases, and uses load control to recover quickly
+     rapidly submit a large number of requests, thus congesting        from sudden bursts of activity. Redline also uses an Ear-
+     the block device and arbitrarily delaying some interactive        liest Deadline First (EDF)-based scheduler for interactive
+     task that requests an I/O operation.                              tasks to ensure that they receive CPU time as required by
+         Redline addresses this problem by using multiple request      their speciﬁcations.
+     queues, one per task class. If one of the queues ﬁlls, the
+     congestion control mechanism will only block processes in         6.1   Admission and Load Control
+     the class associated with that queue. Therefore, no mat-          Admission control determines whether a system has sufﬁ-
+     ter how many requests have been generated by best-effort          cient free resources to support a new task. It is required by
+     tasks, those requests alone cannot cause an interactive task      any system that provides response time guarantees, such as
+     to block.                                                         real-time systems, though it is typically absent from com-
+         In addition, while the default request queue for CFQ is       modity operating systems.
+     capable of differentiating between various request types, it         In real-time systems, admission control works by conser-
+     does not provide sufﬁcient isolation for interactive tasks.       vatively assuming that each task will always consume all
+     Speciﬁcally, once a request has been accepted into the re-        of resources indicated in its speciﬁcation. If the addition
+     quest queue, it awaits selection by the I/O scheduler to be       of a new task would cause the sum of the speciﬁed CPU
+     placed in the dispatch queue, where it is scheduled by a          bandwidths for all active tasks to exceed the available CPU
+     typical elevator algorithm to be performed by the disk it-        bandwidth, then the new task will be rejected. This conser-
+     self. This default CFQ scheduler not only gives preference        vative approach overestimates the CPU bandwidth actually
+     to requests based on their class, but also respects the prior-    consumed by aperiodic tasks, which often use much less
+     ities that tasks assign requests within each class. However,      CPU time than their speciﬁcations would indicate. Thus,
+     each buffered write request—the most common kind—is               real-time admission control often rejects tasks that could
+     placed into a set of shared queues in best-effort class irre-     actually be successfully supported, pessimistically reduc-
+     spective of the task that submitted the request. Therefore,       ing system utilization.
+     best-effort tasks may still interfere with the buffered write        To increase system utilization, Redline uses a more per-
+     requests of interactive tasks by submitting large numbers of      missive admission control policy. If the CPU bandwidth
+     buffered write requests.                                          actually consumed by interactive tasks is not too high, then
+         Redline adds both an interactive Iact class to the request    new interactive tasks may be admitted. Because this ap-
+     queue management, matching its CPU scheduling classes.            proach could lead to an overloaded system if interactive
+     All write requests are placed into the appropriate request        tasks begin to consume more CPU bandwidth, Redline em-
+     queue class based on the type of the submitting task. The         ploys load control that allows it to quickly recover from
+     I/O scheduler prefers requests from the interactive class         such overload. Consequently, Redline does not provide the
+     over those in the BE class, thus ensuring isolation of the        inviolable guarantees of a real-time system, but in exchange
+     requests of interactive tasks from BE tasks.                      for allowing short-lived system overloads, Redline ensures
+         Additionally, the speciﬁcation for a task (see Section 3)     far higher utilization than real-time systems could provide.
+     includes the ability to specify the priority of the task’s I/O       To maximize utilization while controlling load, Redline
+     requests. If the speciﬁcation does not explicitly provide this    strives to keep the CPU bandwidth consumed by interac-
+     information, then Redline automatically assigns a higher          tive tasks within a ﬁxed range. It tracks the actual CPU
+
+
+
+
+78          8th USENIX Symposium on Operating Systems Design and Implementation                                    USENIX Association
+   load that drives its admission and load control policies. We      free memory currently available (i.e., it will not immedi-
+   describe here how Redline tracks load and how it manages          ately induce excessive swapping). We further constrained
+   interactive tasks.                                                Redline to reactivate only one task per period of an obser-
+      Load tracking: Redline maintains two values that re-           vation window to avoid reactivating tasks too aggressively.
+   ﬂect CPU load. The ﬁrst, Rload , represents the actual, re-
+                                                                     6.2   The EDF Scheduling Algorithm
+   cent CPU use. Once per second, Redline measures the
+   CPU bandwidth consumed during that interval by interac-           Redline extends the Linux fair queueing proportional share
+   tive tasks. Rload is the arithmetic mean of the four most         scheduler, CFS [20]. Redline’s EDF scheduler has its own
+   recent CPU bandwidth samples. This four-second obser-             set of per-CPU run queues just as the CFS scheduler does.
+   vation window is long enough to smooth short-lived bursts         Redline inserts interactive tasks into the run queues of both
+   of CPU use, and is short enough that longer-lived overloads       the CFS and EDF schedulers so that each interactive task
+   are quickly detected.                                             can receive any unused CPU bandwidth after consuming
+      The second value, Sload , projects expected CPU load.          its reserved bandwidth. The EDF scheduler has precedence
+   When an interactive task i is launched, the task’s spec-          over the CFS scheduler. During a context switch, Red-
+   iﬁed CPU bandwidth, Bi = CTii , is added to Sload . Since         line ﬁrst invokes the EDF scheduler. If the EDF scheduler
+   speciﬁcations are conservative, Sload may overestimate the        has no runnable tasks to schedule, then Redline invokes the
+   load. Therefore, over time, Sload is exponentially decayed        CFS scheduler.
+   toward Rload . Additionally, as interactive tasks terminate,         Redline maintains the following information for each in-
+   their contribution to Sload is subtracted from that value, thus   teractive task: the starttime and deadline of the current
+   updating the projection.                                          reservation period, and the remaining entitled computation
+      Management policies: Redline uses these CPU load               time (budget). As a task executes, the EDF scheduler keeps
+   values to control interactive tasks through a set of three        track of its CPU usage and deducts the amount consumed
+   policies:                                                         from budget. The EDF scheduler checks whether to assign
+                                                                     a new reservation period to a task at the following places:
+      Admission: When a new interactive task i is submit-
+                                                                     when a new task is initialized, after a task’s budget is up-
+   ted, admission control must determine whether accept-
+                                                                     dated, and when a task wakes up from sleep. If the task has
+   ing the task will force the CPU load above a thresh-
+                                                                     consumed its budget or passes its deadline, the EDF sched-
+   old Rhi , thus placing too high a load on the system. If
+                                                                     uler assigns a new reservation period to the task using the
+   max(Rload , Sload ) + Bi <Rhi , then i is admitted as an inter-
+                                                                     algorithm in Listing 1.
+   active task; otherwise it is placed into the best-effort class.
+   Thus, Redline avoids overloading the system, but does so
+   based on measured system load, thus allowing higher uti-          Listing 1 Assign a new reservation period to task p
+   lization than real-time systems.                                   1: /* has budget, deadline not reached */
+                                                                      2: if (budget > 0) && (now < deadline) then
+      Revocation: Because of Redline’s permissive admission
+   control, it is possible for some interactive tasks to increase     3:    return
+                                                                      4: end if
+   their CPU consumption and overload the system. Under
+                                                                      5: /* has budget, deadline is reached */
+   these circumstances, Redline revokes the interactive clas-
+                                                                      6: if (budget > 0) && (now ≥ deadline) then
+   siﬁcation of some tasks, demoting them to the best-effort
+   class, thus allowing the remaining interactive tasks to re-        7:    if has no interruptible sleep then
+   main responsive.                                                   8:       return
+      Speciﬁcally, if Rload >Rmax , where Rmax >Rhi , then            9:    end if
+                                                                     10: end if
+   Redline revokes tasks until Rload falls below Rhi . Redline
+                                                                     11:
+   prefers to revoke a task that exhausted its reservation dur-
+                                                                     12: /* no budget left: assign a new period */
+   ing the observation window, indicating that the task may
+                                                                     13: dequeue(p)
+   be more CPU-bound and less interactive. However, if there
+                                                                     14: starttime ← max(now,deadline)
+   are no such tasks, Redline revokes the task with the high-
+                                                                     15: deadline ← starttime + T
+   est CPU bandwidth consumption. Certain tasks are set to
+                                                                     16: budget ← max(budget + C, C)
+   be invulnerable to revocation to preserve overall system re-
+                                                                     17: enqueue(p)
+   sponsiveness, such as kernel threads and the graphical user
+   interface tasks.
+      Reactivation: If Rload <Rlo , Redline will reactivate pre-       A task may reach its deadline before expending the bud-
+   viously revoked tasks, promoting them from the best-effort        get (see line 6) for the following reasons: it did not actually
+   class to the interactive class. A task is eligible for reacti-    have enough computation work to exhaust the budget in the
+   vation if both (a) it passes the usual admission test, and (b)    past period; it ran into a CPU overload; or it experienced
+   its virtual memory size minus its resident size is less than      non-discretionary delays, such as page faults or disk I/O.
+
+
+
+
+USENIX Association                              8th USENIX Symposium on Operating Systems Design and Implementation              79
+     The EDF scheduler differentiates these cases by checking         an interactive task is managed according to its real usage,
+     whether the task voluntarily gave up the CPU during the          negating the impact of the over-speciﬁcation. If an inter-
+     past period (i.e., had at least one interruptible sleep, see     active task is under-speciﬁed, it will at least make steady
+     line 7). If so, the EDF scheduler assigns a new period to the    progress with the reserved CPU bandwidth allocated to it.
+     task. Otherwise, it considers that the task missed a deadline    Furthermore, if the system is not heavily loaded, an under-
+     and pushes its work through as soon as possible.                 speciﬁed interactive task will also allocated some of the re-
+        If a task consumes its budget before reaching the dead-       maining CPU bandwidth along with the best-effort tasks.
+     line, it will receive a new reservation period. But the start    Thus, even under-speciﬁed tasks become poorly responsive
+     time of this new period is later than the current time (see      only if the system load is high.
+     line 14). The EDF scheduler considers a task eligible for           We therefore believe that speciﬁcation management
+     using reserved CPU time only if starttime ≤ now. There-          should not be an obstacle. A simple tool could allow a
+     fore, it will not pick this task for execution until its new     user to experimentally adjust the reservations (both C and
+     reservation period starts. This mechanism prevents a inter-      T ), ﬁnding minimal requirements for acceptable perfor-
+     active task from consuming more than its entitlement and         mance. Redline could also be made to track and report ac-
+     thereby interfering with other interactive tasks.                tual CPU bandwidth usage over time, allowing ﬁne-tuning
+        At any context switch, the EDF scheduler always picks         of the speciﬁcations.
+     for execution the eligible task that has the earliest dead-         Memory Management: For any task to be responsive,
+     line. We implemented its run queue using a tagged red-           the operating system must cache its working set in main
+     black tree similar to the binary tree structure proposed in      memory. Many real-time systems conservatively “pin” all
+     EEVDF [28]. The red-black tree is sorted by the start time       pages of a task, preventing their removal from main mem-
+     of each task. Each node in the tree has a tag recording          ory to ensure that the working set must be cached. In con-
+     the earliest deadline in its subtree. The complexity of its      trast, Redline protects any page used by an interactive task
+     enqueue, dequeue, and select operations are all O(log n),        within the last π seconds, thus protecting the task’s working
+     where n is the number of runnable tasks.                         set while allowing its inactive pages to be evicted. In choos-
+                                                                      ing a value for π, it is important not to make it too small,
+     6.3   SMP Load Balancing
+                                                                      causing the system to be behave like a standard, commodity
+     Load balancing in Redline is quite simple, because the ba-       OS. It is safer to overestimate π, although doing so makes
+     sic CPU bandwidth needs of an interactive task will be sat-      Redline behave more like a conservative real-time system.
+     isﬁed once it is accepted on a CPU. It is not necessary to       This method of identifying the working set works well un-
+     move an accepted task unless that CPU is overloaded. The         der many circumstances with reasonable choices of π.
+     only thing Redline has to do is select a suitable CPU for           However, there are other mechanisms that estimate the
+     each new interactive task during calls to exec(). Redline al-    working set more accurately. By using such mechanisms,
+     ways puts a new task on the CPU that has the lowest Rload        Redline could avoid the dangers caused by setting π poorly.
+     at the time. Once the task passes the admission test, it stays   One such alternative is the working set measurement used
+     on the same CPU as long as it remains accepted. If the CPU       in CRAMM [32]. CRAMM maintains reference distribu-
+     becomes overloaded, Redline will revoke at least one inter-      tion histograms to track each task’s working set on-line
+     active task tied to that CPU. Once turned into best-effort       with low overhead and high accuracy. While we believe
+     tasks, revoked tasks can be moved to other CPUs by the           that this approach is likely to work well, it does not guar-
+     load balancer. When a revoked task wakes up on a new             antee that the working set is always properly identiﬁed.
+     CPU, Redline will attempt to reactivate its speciﬁcation if      Speciﬁcally, if a task performs a phase change, altering its
+     there are adequate resources there.                              reference behavior suddenly and signiﬁcantly, this mecha-
+                                                                      nism will require a moderate period of time to recognize
+     7     Discussion                                                 the change. During this period, CRAMM could substan-
+     In this section, we discuss several design choices for Red-      tially under- or over-estimate application working set sizes.
+     line, and we address alternatives that may merit further in-     However, we believe such behavior is likely to be brief and
+     vestigation.                                                     tolerable in the vast majority of cases. We intend to in-
+        Speciﬁcations: Setting speciﬁcations in Redline does          tegrate the CRAMM VMM into Redline and evaluate its
+     not require precise, a priori application information. Since     performance.
+     Redline’s admission control takes the current CPU load
+     into account, a user or system administrator can modestly
+                                                                      8   Experimental Evaluation
+     over-specify a task’s resource needs. The only danger of         Figure 1 shows that the execution of a single compilation
+     over-speciﬁcation is that a newly launched task may be           command (make -j32) signiﬁcantly degrades responsive-
+     rejected by the admission control if the system is sufﬁ-         ness on a standard system, while Redline is able to keep
+     ciently loaded with other interactive tasks. Once admitted,      the system responsive and play the video smoothly. In this
+
+
+
+
+80           8th USENIX Symposium on Operating Systems Design and Implementation                                   USENIX Association
+    section, we further evaluate the performance of Redline im-       However, when lmbench measures context switching
+    plementation by stressing the system with a variety of ex-     time, it creates a workload in which exactly one task is
+    treme workloads.                                               unblocked and ready to run at any given moment. This
+       Platform: We perform all measurements on a system           characteristic of lmbench may be unrepresentative of some
+    with a 3 GHz Pentium 4 CPU, 1 GB of RAM, a 40GB                workloads, so we further compare these schedulers by run-
+    FUJITSU 5400RPM ATA disk, and an Intel 82865G in-              ning multiple busy-looping tasks, all of which would be
+    tegrated graphics card. The processor employs symmetric        ready to run at any moment. We tested workloads of 1, 20,
+    multithreading (SMT) (i.e., Intel’s HyperThreading), thus      200, and 2,000 tasks. We perform this test twice for Red-
+    appearing to the system as two processors. We use a Linux      line, launching best-effort tasks to test its CFS scheduler,
+    kernel (version 2.6.22.5) patched with the CFS scheduler       and launching interactive tasks to test its EDF scheduler. In
+    (version 20.3) as our control. Redline is implemented as a     the latter case, we assigned speciﬁcation values for C:T as
+    patch to this same Linux version. For all experiments, the     1:3, 1:30, 1:300 and 1:3,000 respectively, thus forcing the
+    screen resolution was set to 1600 x 1200 pixels.               Redline EDF scheduler to perform a context switch almost
+       All experiments used both of the SMT-based virtual          every millisecond. Note that with these speciﬁcation val-
+    CPUs except when measuring the context switch overhead.        ues, the Redline EDF scheduler is invoked more frequently
+    Furthermore, we ran each experiment 30 times, taking both      than a CFS scheduler would be, running roughly once per
+    the arithmetic mean and the standard deviation of all timing   millisecond (whereas the usual Linux CFS quanta is 3 ms).
+    measurements.                                                     The number of loops are chosen so that each run takes
+       Application Settings and Inputs: Table 1 shows a sub-       approximately 1,400 seconds. Figure 4(b) shows the mean
+    set of the task speciﬁcations used for the experiments under   total execution time of running these groups of tasks with
+    Redline. It includes the init process, kjournald, the X11      Linux CFS, Redline CFS, and Redline EDF. In the worst
+    server Xorg, KDE’s desktop/window manager, the bash            case, the Redline EDF scheduler adds 0.54% to the running
+    shell, and several typical interactive applications. We left   time, even when context switching far more frequently than
+    the memory protection period (π) and I/O priority empty in     the CFS schedulers. Note that the total execution time of
+    all the speciﬁcations, letting Redline choose them automat-    these experiments was bimodal and, as shown by the error
+    ically.                                                        bars, made the variance in running times larger than the dif-
+                                                                   ference between results. The overhead of using the Redline
+                      C:T (ms)                 C:T (ms)            schedulers is negligible.
+              init      2:50      kjournald     10:100                Fork Bombs: We now evaluate the ability of Redline to
+            Xorg       15:30         kdeinit      2:30             maintain the responsiveness of interactive tasks. First, we
+            kwin        3:30      kdesktop        3:30             launch mplayer as an interactive task, letting it run for a
+             bash      5:100            vim      5:100             few seconds. Then, we simultaneously launch many CPU-
+          mplayer       5:30         ﬁrefox       6:30             intensive tasks, thus performing a fork bomb. Speciﬁcally,
+                                                                   a task forks a ﬁxed number of child tasks, each of which ex-
+    Table 1: A subset of the speciﬁcations used in the Redline
+                                                                   ecutes an inﬁnite loop, and then kills them after 30 seconds.
+    experiments.
+                                                                   We performed two tests for Redline: the ﬁrst runs the fork
+                                                                   bomb tasks as best-effort, and the second runs them as in-
+       The movie player, mplayer, plays a 924.3 Kb/s AVI-
+                                                                   teractive. In the latter case, the fork bomb tasks were given
+    format video at 25 frames per second (f/s) with a resolu-
+                                                                   CPU bandwidth speciﬁcations of 10:100. For the Linux
+    tion of 520 x 274. To give the standard Linux system the
+                                                                   test, the interactive task had the highest possible priority (-
+    greatest opportunity to support these interactive tasks, we
+                                                                   20), while the fork bomb tasks were assigned the default
+    set mplayer, ﬁrefox, and vim to have a CPU scheduler pri-
+                                                                   priority (0).
+    ority of -20—the highest priority possible. Also note that a
+                                                                      Figure 5 shows the number of frames rate of achieved by
+    pessimistic admission test, like that of a real-time system,
+                                                                   mplayer during these tests. In Figure 5(a), the fork bomb
+    would not accept all of the applications in Table 1, because
+                                                                   comprises 50 tasks, while Figure 5(b) shows a 2,000-task
+    they would over-commit the system. Redline, however, ac-
+                                                                   fork bomb. Both of these ﬁgures show, for Redline, best-
+    cepts these as well as many other interactive tasks.
+                                                                   effort and interactive fork bombs. Under Linux with 50
+    8.1   CPU Scheduling                                           tasks, mplayer begins normally. After approximately 10
+       Scheduler Overhead: We compare the performance of           seconds, the fork bomb begins and mplayer receives so lit-
+    the Redline EDF scheduler with the Linux CFS scheduler.        tle CPU bandwidth that its frame rate drops nearly to zero.
+    Figure 4(a) presents the context switch overhead for each      Amusingly, after the fork bomb terminates at the 40 second
+    scheduler as reported by lmbench. From 2 to 96 processes,      mark, mplayer “catches up” by playing frames at more than
+    the context switch time for both schedulers is exceedingly     triple the normal rate. For Linux, the 2,000-task fork bomb
+    comparable.                                                    has the identical effect on mplayer. The load is so high that
+
+
+
+
+USENIX Association                             8th USENIX Symposium on Operating Systems Design and Implementation             81
+                                                                       D FRQWH[WVZLWFKRYHUKHDGUHSRUWHGE\OPEHQFK                                                                                    E UXQQLQJPXOWLSOHSURFHVVHVXVLQJGLIIHUHQWVFKHGXOHUV
+                                                                                                                                                                 
+                                                             /LQX[&)6     5HGOLQH(')                                                                                                                                       /LQX[&)6   5HGOLQH&)6          5HGOLQH(')
+                                                                                                                                                                                                              
+
+
+
+
+                                                                                                                              7RWDO([HFXWLRQ7LPH 6HFRQGV
+                                                                                                                                                                 
+
+
+
+
+         &7;2YHUKHDG PLFURVHFRQGV
+                                                                                                                                                                                                                                                            
+                                                                                                                                                                  
+                                            
+                                                                                                                                                                  
+                                            
+                                                                                                                                                                  
+                                            
+                                                                                                                                                                  
+                                            
+                                                                                                                                                                  
+                                                                                                                                                                 
+
+                                                                                                                                                                 
+                                                                                                                                                                                                                                               
+                                                                                   1XPEHURISURFHVVHV                                                                                                                   1XPEHURISURFHVVHV
+
+
+
+     Figure 4: An evaluation of CPU scheduling overhead. Figure (a) shows the context switching times as evaluated by
+     lmbench. Figure (b) shows the total running time of varying numbers of CPU intensive tasks. Note the y-axis starting at
+     1,300 to make the minor variation visible.
+
+                                                                   (a) Impact of a 50 process fork bomb on mplayer                                                                                      (b) Impact of a 2000 process fork bomb on mplayer
+                                                90                                                                                                                                     90
+                                                              Linux CFS: BE bomb                                                                                                                     Linux CFS: BE bomb
+                                                80               Redline: BE bomb                                                                                                      80               Redline: BE bomb
+                                                                Redline: Iact bomb                                                                                                                     Redline: Iact bomb
+                                                70                                                                                                                                     70
+
+
+
+
+                  Frames per Second (fps)                                                                                               Frames per Second (fps)
+                                                60                                                                                                                                     60
+
+                                                50                                                                                                                                     50
+
+                                                40                                                                                                                                     40
+
+                                                30                                                                                                                                     30
+
+                                                20                                                                                                                                     20
+
+                                                10                                                                                                                                     10
+
+                                                0                                                                                                                                           0
+                                                     0             10             20        30           40        50    60                                                                     0             50               100             150                200
+                                                                                  Elapsed Time (Seconds)                                                                                                               Elapsed Time (Seconds)
+
+
+                                                                    Figure 5: Playing a video and launching fork bombs of (a) 50 or (b) 2,000 (b) tasks.
+
+
+     even the fork bomb’s parent task is unable to kill all of the                                                                                                                                                 Impact of moving a window on mplayer
+     children after 30 seconds, delaying the “catch-up” phase                                                                                                                                   45
+                                                                                                                                                                                                                                                         Linux CFS
+     of mplayer until approximately the 190 second mark. In                                                                                                                                     40                                                          Redline
+
+     fact, the whole Linux system becomes unresponsive, with                                                                                                                                    35
+
+
+
+
+                                                                                                                                                                  Frames per Second (fps)
+     simple tasks like moving the mouse and switching between                                                                                                                                   30
+     windows becoming so slow that human intervention is im-                                                                                                                                    25
+     possible.                                                                                                                                                                                  20
+
+        In Redline, these fork bombs, whether run as best-effort                                                                                                                                15
+
+     or interactive tasks, have a negligible impact on mplayer.                                                                                                                                 10
+
+     Only the 2,000 task interactive fork bomb brieﬂy degrades                                                                                                                                   5
+
+     the frame rate to 20 f/s, which is a barely perceptible ef-                                                                                                                                 0
+                                                                                                                                                                                                        5       10      15       20      25         30       35       40      45
+     fect. This brief degradation is caused by the 1 ms period                                                                                                                                                           Elapsed Time (Seconds)
+     that Redline gives to each newly forked task before per-
+     forming an admission test, leaving the system temporarily                                                                                                    Figure 6: Playing video while dragging around a window.
+     overloaded.
+        Competing Interactive Tasks: In order to see how in-
+     teractive tasks may affect each other, we launch mplayer,                                                                                           Xorg requires a good deal of CPU bandwidth to update the
+     and then we have a user drag a window in a circle for 20                                                                                            screen. However, the CFS scheduler gives the same CPU
+     seconds. Figure 6 shows that, under Linux, moving a win-                                                                                            share to all runnable tasks, allowing the window manager
+     dow has substantial impact on mplayer. Because we use a                                                                                             to submit screen update requests faster than Xorg can pro-
+     high screen resolution and a weakly powered graphics card,                                                                                          cess them. When mplayer is awakened, it has to wait until
+
+
+
+82                                          8th USENIX Symposium on Operating Systems Design and Implementation                                                                                                                                              USENIX Association
+                                   Impact of a 4x300MB memory bomb on mplayer                                             Uncontrolled reserve: 4x300MB interactive memory bomb
+                         60                                                                                      60
+
+
+
+
+     Frames per Second                                                                       Frames per Second
+                                                              Linux: BE bomb                                                                       Redline: Iact bomb: run1
+                         50                                                                                      50
+                         40                                                                                      40
+                         30                                                                                      30
+                         20                                                                                      20
+                         10                                                                                      10
+                          0                                                                                       0
+                         60                                                                                      60
+
+
+
+
+     Frames per Second                                                                       Frames per Second
+                                                            Redline: BE bomb                                                                       Redline: Iact bomb: run2
+                         50                                 Redline: Iact bomb                                   50
+                         40                                                                                      40
+                         30                                                                                      30
+                         20                                                                                      20
+                         10                                                                                      10
+                          0                                                                                       0
+                              0   20    40     60      80     100     120        140   160                            0       20         40        60         80        100       120
+                                             Elapsed Time (Seconds)                                                                      Elapsed Time (Seconds)
+
+
+   Figure 7: Playing video with 4 x 300 MB memory bomb                                       Figure 8: Playing a movie with 4 x 300 MB interactive
+   tasks. The frame rate is severely erratic under Linux, but is                             memory bomb tasks on a Redline system without the rate
+   steady under Redline.                                                                     controlled memory reserve.
+
+
+   all other runnable tasks make sufﬁcient progress before it                                   The Rate Controlled Reserve: In order to demonstrate
+   is scheduled for execution. Moreover, its requests are in-                                the importance of the rate controlled reserve, we remove
+   serted at the end of Xorg’s backlogged service queue. Con-                                it from Redline and repeat the interactive memory bomb
+   sequently, the frame rate of mplayer becomes quite erratic                                experiment. Figure 8 shows how mplayer behaves in two
+   as it falls behind and then tries to catch up by submitting a                             different runs. In the ﬁrst, memory-demanding interac-
+   group of frame updates in rapid succession.                                               tive tasks quickly exhaust the free memory, forcing others
+      In Redline, mplayer plays the movie smoothly no matter                                 tasks to reclaim pages when allocating memory. Therefore,
+   how quickly we move the window, even though Xorg and                                      mplayer is unable to maintain its frame rate. At approxi-
+   all of the tasks comprising the GUI are themselves inter-                                 mately the 90 second mark, the Redline VMM ﬁnally de-
+   active tasks. We believe that because Xorg effectively gets                               motes an interactive task to the best-effort class, and then
+   more bandwidth (50% reserved plus proportional sharing                                    the frame rate of mplayer stabilizes. Depending on when
+   with other tasks), and the EDF scheduler causes mplayer                                   and which tasks the Redline VMM chooses to revoke, the
+   add its requests into Xorg’s service queue earlier.                                       interactive memory bomb can prevent the system from be-
+                                                                                             ing responsive for a long period of time. Here, more than
+   8.2                   Memory Management                                                   one minute passes before responsiveness is restored. How-
+      Memory Bombs: We simulate a workload that has a                                        ever, during the second run, mplayer was unresponsive for
+   high memory demand by using memory bombs. This ex-                                        only about 10 seconds, thanks to a different selection of
+   periment creates four tasks, each of which allocates 300                                  tasks to demote. Ultimately, the limited isolation among
+   MB of heap space and then repeatedly writes to each page                                  interactive tasks provided by this small rate controlled re-
+   in an inﬁnite loop. For Redline, we perform two experi-                                   serve is crucial to the maintaining a consistently responsive
+   ments: the ﬁrst launches the memory bombs as best-effort                                  system.
+   tasks, and the second launches them as interactive ones us-                                  Speed-bump Pages: To examine the effectiveness of
+   ing speciﬁcation 10:100.                                                                  Redline’s speed-bump page mechanism, we ﬁrst start one
+      The upper part of Figure 7 shows, for Linux, the frame                                 500 MB memory bomb task. After a few seconds, we
+   rate for mplayer over time with the memory bomb tasks                                     launch a second 500 MB memory bomb. Under Linux,
+   running. The frame rate is so erratic that movie is unwatch-                              we set this second task’s priority to be -20. Under Red-
+   able. Both video and audio pause periodically. The mem-                                   line, we launch it as an interactive task whose speciﬁcation
+   ory bomb forces the VMM to swap out many pages used                                       is set to 10:100. Figure 9 presents the resident set sizes
+   by GUI applications, making the system as a whole unre-                                   (RSS)—the actual number of cached pages—for each task
+   sponsive. As shown by the lower part of Figure 7, under                                   over time. Under Linux, the second task, in spite of its
+   Redline, mplayer successfully survives both the best-effort                               high priority, is never allocated its complete working set of
+   and interactive memory bombs. Each of them only leads to                                  500 MB. Here, the ﬁrst task dirties pages too fast, prevent-
+   one brief disruption of the frame rate (less than 3 seconds),                             ing the Linux VMM from ever reallocating page frames to
+   which a user will notice but is likely to tolerate. The sys-                              the higher priority task. However, under Redline, the sec-
+   tem remains responsive, allowing the user to carry out GUI                                ond task is quickly allocated space for its full working set,
+   operations and interact as usual.                                                         stealing pages from the ﬁrst, best-effort task.
+
+
+
+
+USENIX Association                                                    8th USENIX Symposium on Operating Systems Design and Implementation                                               83
+                              Running two 500MB working set processes                                                              Impact of large disk reads on mplayer
+                600                                                                                             60
+                                                                                                                     Linux CFQ
+                500
+                                                                                                                        Redline
+
+
+     rss (MB)
+                400                                                                                             50
+                300
+
+
+
+
+                                                                                      Frames per Second (fps)
+                200
+                                   Linux                  first task: BE                                        40
+                100
+                                                  second task: BE (-20)
+                  0
+                                                                                                                30
+                600
+                500
+                                                                                                                20
+
+     rss (MB)
+                400
+                300
+                200                                                                                             10
+                100                Redline                 first task: BE
+                                              second task: Iact (10:100)
+                  0                                                                                              0
+                      0      20       40        60         80         100   120                                      20       40         60       80      100      120     140   160
+                                      Elapsed Time (Seconds)                                                                             Elapsed Time (Seconds)
+
+
+     Figure 9: Competing memory bomb tasks. Under Linux,                                                 Figure 10: The impact of massive reads on mplayer.
+     the lower-priority background task prevents the higher-
+     priority foreground task from caching its working set.
+                                                                                  line automatically assigns higher I/O priorities to the inter-
+                                                                                  active task, allowing it to maintain its framerate through-
+        As an alternative test of this mechanism, we launched                     out.
+     four 300 MB memory bombs, and then launched the ﬁrefox
+     web browser. Under Redline, ﬁrefox was ready and respon-
+                                                                                  9                             Related Work
+     sive after 30 seconds; under a standard Linux kernel, more                   We now brieﬂy discuss related work in the areas of schedul-
+     than 4 minutes passed before the browser could be used.                      ing, virtual memory management, and I/O management.
+                                                                                  Table 2 summarizes the characteristics of several repre-
+     8.3         Disk I/O Management
+                                                                                  sentative CPU schedulers and operating systems, and com-
+     We examine the effectiveness of Redline’s disk I/O man-                      pares them to Redline.
+     agement by running tasks that perform intensive disk I/O.                       CPU Scheduling: Neither time-sharing schedulers
+         Writing: To test disk writing operations, we launch two                  (e.g., used by Linux, FreeBSD, Solaris, Windows) nor
+     background tasks meant to interfere with responsiveness.                     proportional-share schedulers [10, 31, 27, 28, 22] that sim-
+     Speciﬁcally, each task repeatedly writes to an existing, 200                 ulate the ideal GPS model [24] provide adequate support
+     MB ﬁle using buffered writes. We then use vim, modiﬁed                       to address response time requirements. These systems typ-
+     to report the time required to execute its write command, to                 ically employ heuristics to improve the responsiveness of
+     perform sporadic write requests of a 30 KB ﬁle. It is set to                 interactive tasks. For example, FreeBSD boosts the priori-
+     the highest priority (-20) under Linux, while it is launched                 ties for I/O-bound tasks, and Windows Vista does the same
+     as an interactive task with a speciﬁcation of 5:100 under                    for tasks running in its multimedia class.
+     Redline.                                                                        Several extended general-purpose schedulers provide
+         For Linux, each transaction in the journaling ﬁle sys-                   performance isolation across scheduling classes.          A-
+     tem is heavily loaded with dirty pages from the background                   SFQ [26] dynamically adjusts weights to maintain stable
+     tasks. Thus, the calls to fsync() performed by vim causes it                 CPU bandwidth for the class serving soft real-time tasks.
+     to block for a mean of 28 seconds. Under Redline, the re-                    BVT [8] and BERT [3] achieve the same goal by adjusting
+     duced dirty threshold for best-effort tasks forces the system                virtual time or deadlines, while BEST [1] and SMART [21]
+     to ﬂush the dirtied pages of the background task more fre-                   incorporate EDF into proportional share schedulers. How-
+     quently. When vim calls fsync(), the transaction committed                   ever, without appropriate admission and load control, none
+     by the journaling ﬁle system takes much less time because                    of these systems can provide CPU bandwidth guarantees
+     it is much smaller, requiring a mean of only 2.5 seconds.                    under heavy workloads.
+         Reading: We play a movie using mplayer in the fore-                         Unlike these general-purpose systems, real-time systems
+     ground while nine background tasks consume all of the disk                   often impose draconian admissions control and enforce-
+     bandwidth. Each background task reads 100 MB from disk                       ment mechanisms in order to provide strict performance
+     in 20 MB chunks using direct I/O (bypassing the ﬁle system                   guarantees. Examples include Nemesis [16], CPU service
+     cache to achieve steady I/O streams). Figure 10 shows the                    class [6], Linux/RK [23], Rialto [15], Lin et al.’s sched-
+     number frame rate of mplayer over time for both Linux and                    uler [11], and work by Deng et al. [7] and PSheED [17].
+     Redline. Under Linux, mplayer blocks frequently because                      While speciﬁcation-based admission tests pessimistically
+     of the pending I/O requests of the background tasks, thus                    reject tasks in exchange for strict guarantees, Redline
+     making the frame rate severely degraded and erratic. Red-                    adapts to the actual system workload, maximizing resource
+
+
+
+
+84                    8th USENIX Symposium on Operating Systems Design and Implementation                                                                            USENIX Association
+                                                                  Admission     Performance isolation    Intg. Mgmt.     Without
+                                                                    control     interclass intraclass    mem     I/O    app. mod.
+                                                                                                                           √
+                  Stride [31],EEVDF [28], VTRR [22],PD [27]           ×              ×          ×         n/a    n/a
+                                                                                                                           √
+                  SFQ [10], A-SFQ [26]                                ×           strong        ×         n/a    n/a
+       CPU        BVT [8], BERT [3]                                   ×           strong      weak        n/a    n/a        ×
+                                                                                                                            √
+     Scheduler    BEST [1]                                            ×            weak       weak        n/a    n/a
+                  SMART [21]                                          ×           strong     strong       n/a    n/a        ×
+                  PSheED [17], Deng et al. [7]                    pessimistic      strict     strict      n/a    n/a        ×
+                                                                                                                            √
+                  Linux, FreeBSD, Solaris, Windows                    ×              ×          ×         ×       ×
+                                                                                                          √       √         √
+                  Solaris Container [19], Eclipse [4], SPU [30]       ×           strong        ×
+                                                                                                                  √         √
+     Operating    QLinux [29]                                         ×           strong        ×         ×
+                                                                                                                  √
+     Systems      Linux-SRT [5]                                   pessimistic     strong        ×         ×                 ×
+                                                                                                                  √
+                  Rialto [15]                                     pessimistic      strict     strict      ×                 ×
+                                                                                                                  √
+                  Nemesis [16]                                    pessimistic      strict     strict      ×                 ×
+                                                                                                          √       √         √
+                  Redline                                         load based      strong    dynamic
+
+                        Table 2: A comparison of Redline to other CPU schedulers and operating systems
+
+
+    utilization while accommodating as many interactive tasks          reservations to provide response time guarantees and in-
+    as possible.                                                       clude specialized I/O schedulers. However, both systems
+       Memory Management: A number of memory man-                      employ pessimistic admission policies that reduce their
+    agers employ strategies that improve on the traditional            ability to handle a large number of aperiodic tasks with
+    global LRU model still used by Linux. The Windows vir-             unpredictable workloads. More importantly, these systems
+    tual memory manager adopts a per-process working set               do not address the thorny issue of memory management:
+    model, with a kernel thread that attempts to move pages            Nemesis allocates a certain amount of physical memory to
+    from each process’s working set onto a standby reclama-            each task according to its contract and lets each task man-
+    tion list, prioritized based on task priorities. In Zhou et        age its own memory via self-paging, while Rialto simply
+    al. [33], the virtual memory manager maintains a miss ratio        locks all memory pages used by real time tasks. Similarly,
+    curve for each process and evicts pages from the process           QLinux [29] divides tasks into classes and uses a hierarchi-
+    that incurs the least penalty. Token-ordered LRU [14] al-          cal SFQ scheduler to manage CPU and network bandwidth
+    lows one task in the system to hold a token for a period of        together with Cello as its I/O scheduler, but does not ad-
+    time to build up its working set. CRAMM [32] and Book-             dress the problem of memory management.
+    marking GC [12] use operating system support that allows
+    garbage collected applications avoid page swapping. Un-
+                                                                          Solaris Containers [19] combine system resource man-
+    like Redline, none of these memory managers can prevent
+                                                                       agement with a boundary separation provided by zones.
+    the system from evicting too many pages from interactive
+                                                                       Each zone can be conﬁgured to have a dedicated amount
+    applications.
+                                                                       of resources and then acts as a completely isolated virtual
+       Disk I/O Management: Traditional disk I/O subsys-
+                                                                       server. Eclipse [4] and SPU [30] follow a similar approach,
+    tems are designed to maximize the overall throughput,
+                                                                       partitioning resources statically and ignoring the issue of
+    rather than minimizing response time. The widely used
+                                                                       responsiveness. Moreover, it is highly impractical to cre-
+    SCAN (Elevator) algorithm sorts I/O requests by sector
+                                                                       ate one zone/container for every possible interactive ap-
+    number to avoid unnecessary seeks. Anticipatory I/O [13]
+                                                                       plication due to complex interactions among them and the
+    improves throughput even further by delaying I/O service
+                                                                       tremendous conﬁguration effort that would be required. By
+    so it can batch a number of I/O requests. Some operating
+                                                                       contrast, Redline’s adaptive approach is simpler and better
+    systems (e.g. Linux and Windows) can prioritize I/O re-
+                                                                       matches the needs of supporting interactive applications in
+    quests according to task priorities. This mechanism has lit-
+                                                                       commodity operating systems.
+    tle effect in practice, since most applications are launched
+    with the same default priority. While Redline’s I/O sched-
+    uler is effective, I/O schedulers developed for soft real             IRS [9] and Resource Containers [2] also provide inte-
+    time systems, such as R-SCAN in Nemesis [16], Cello in             grated management of multiple resources with a focus on
+    QLinux [29] and DS-SCAN in IRS [9], could be incorpo-              providing real time service to multiple clients, although
+    rated into Redline to enable more precise control over I/O         IRS does not address memory management. However, un-
+    bandwidth.                                                         like Redline, these systems require that all applications in a
+       Integrated Resource Management: Like Redline,                   system explicitly state their resource needs, requiring com-
+    Nemesis [16], Rialto [15] and Linux-SRT [5] use CPU                plex modiﬁcations to existing applications.
+
+
+
+USENIX Association                              8th USENIX Symposium on Operating Systems Design and Implementation               85
+     10 Conclusion                                                               [14] S. Jiang and X. Zhang. Token-ordered LRU: an effective page re-
+                                                                                      placement policy and its implementation in Linux systems. Perform.
+     We present Redline, a system designed to support highly                          Eval., 60(1-4):5–29, 2005.
+     interactive applications in a commodity operating system                    [15] M. B. Jones, D. L. McCulley, A. Forin, P. J. Leach, D. Rosu, and
+     environment. Redline combines lightweight speciﬁcations                          D. L. Roberts. An overview of the Rialto real-time architecture. In
+     with an integrated management of memory, disk I/O, and                           Proc. of the 7th ACM SIGOPS European Workshop, pages 249–256,
+                                                                                      1996.
+     CPU resources that delivers responsiveness to interactive
+     applications even in the face of extreme workloads.                         [16] I. M. Leslie, D. McAuley, R. Black, T. Roscoe, P. Barham, D. Evers,
+                                                                                      R. Fairbairns, and E. Hyden. The design and implementation of
+        The Redline system (built on Linux) is open-source soft-                      an operating system to support distributed multimedia applications.
+     ware and may be downloaded at http://redline.                                    IEEE Journal on Selected Areas in Communications, 14(7):1280–
+     cs.umass.edu.                                                                    1297, 1996.
+                                                                                 [17] G. Lipari, J. Carpenter, and S. K. Baruah. A framework for achiev-
+     11 Acknowledgements                                                              ing inter-application isolation in multiprogrammed hard real-time
+                                                                                      environments. In Proc. of the 21st RTSS, pages 217–226, 2000.
+     This material is based upon work supported by the Na-
+                                                                                 [18] C. L. Liu and J. W. Layland. Scheduling algorithms for multi-
+     tional Science Foundation under CAREER Award CNS-                                programming in a hard-real-time environment. Journal of ACM,
+     0347339 and CNS-0615211. Any opinions, ﬁndings, and                              20(1):46–61, 1973.
+     conclusions or recommendations expressed in this material                   [19] J. Mauro and R. McDougall. Solaris Internal: Core Kernel Compo-
+     are those of the author(s) and do not necessarily reﬂect the                     nents. Sum Microsystems Press, A Prentice Hall Title, 2000.
+     views of the National Science Foundation.                                   [20] I. Molnar. http://people.redhat.com/mingo/cfs-scheduler/.
+                                                                                 [21] J. Nieh and M. S. Lam. SMART: A processor scheduler for multi-
+     References                                                                       media applications. In Proc. of the 15th SOSP, page 233, 1995.
+      [1] S. A. Banachowski and S. A. Brandt. Better real-time response for
+                                                                                 [22] J. Nieh, C. Vaill, and H. Zhong. Virtual-Time Round-Robin: An
+          time-share scheduling. In Proc. of the 11th WPDRTS, page 124.2,
+                                                                                      O(1) proportional share scheduler. In Proc. of the 2001 USENIX,
+          2003.
+                                                                                      pages 245–259, 2001.
+      [2] G. Banga, P. Druschel, and J. C. Mogul. Resource containers: A
+                                                                                 [23] S. Oikawa and R. Rajkumar. Portable RK: A portable resource ker-
+          new facility for resource management in server systems. In Proc. of
+                                                                                      nel for guaranteed and enforced timing behavior. In Proc. of the 5th
+          the 3rd OSDI, pages 45–58, 1999.
+                                                                                      RTAS, pages 111–120, 1999.
+      [3] A. Bavier, L. Peterson, and D. Mosberger. BERT: A scheduler for        [24] A. K. Parekh and R. G. Gallager. A generalized processor sharing
+          best effort and realtime tasks. Technical Report TR-587-98, Prince-         approach to ﬂow control in integrated services networks: the single
+          ton University, 1999.                                                       node case. In Proc. of IEEE INFOCOM, 1992.
+      [4] J. Bruno, E. Gabber, B. Özden, and A. Silberschatz. The Eclipse       [25] V. Prabhakaran, A. C. Arpaci-Dusseau, and R. H. Arpaci-Dusseau.
+          operating system: Providing quality of service via reservation do-          Analysis and Evolution of Journaling File Systems. In Proc. of the
+          mains. In Proc. of the 1998 USENIX, pages 235–246, 1998.                    2005USENIX, pages 105–120, 2005.
+      [5] S. Childs and D. Ingram. The Linux-SRT integrated multimedia           [26] M. A. Rau and E. Smirni. Adaptive CPU scheduling policies for
+          operating system: Bringing QoS to the desktop. In Proc. of the 7th          mixed multimedia and best-effort workloads. In Proc. of the 7th
+          RTAS, pages 135–140, 2001.                                                  MASCOTS, page 252, Washington, DC, 1999.
+      [6] H.-H. Chu and K. Nahrstedt. CPU service classes for multimedia         [27] A. Srinivasan and J. H. Anderson. Fair scheduling of dynamic task
+          applications. In Proc. of the 6th ICMCS, Vol. 1, pages 296–301,             systems on multiprocessors. Journal of System Software, 77(1):67–
+          1999.                                                                       80, 2005.
+      [7] Z. Deng, J. Liu, L. Y. Zhang, M. Seri, and A. Frei. An open environ-   [28] I. Stoica and H. Abdel-Wahab. Earliest eligible virtual deadline ﬁrst
+          ment for real-time applications. Real-Time Systems, 16(2-3):155–            : A ﬂexible and accurate mechanism for proportional share resource
+          185, 1999.                                                                  allocation. Technical Report TR-95-22, Old Dominion University,
+      [8] K. J. Duda and D. R. Cheriton. Borrowed-virtual-time (BVT)                  1995.
+          scheduling: Supporting latency-sensitive threads in a general-         [29] V. Sundaram, A. Chandra, P. Goyal, P. J. Shenoy, J. Sahni, and H. M.
+          purpose schedular. In Proc. of the 17th SOSP, pages 261–276, 1999.          Vin. Application performance in the QLinux multimedia operating
+      [9] K. Gopalan and T. Chiueh. Multi-resource allocation and scheduing           system. In Proc. of the 8th ACM Multimedia, pages 127–136, 2000.
+          for periodic soft real-time applications. In Proc. of the 9th MMCN,    [30] B. Verghese, A. Gupta, and M. Rosenblum. Performance isolation:
+          pages 34–45, Berkeley, CA, 2002.                                            Sharing and isolation in shared-memory multiprocessors. In Proc.
+     [10] P. Goyal, X. Guo, and H. M. Vin. A hierarchical CPU scheduler               of the 8th ASPLOS, pages 181–192, 1998.
+          for multimedia operating systems. In Proc. of the 2nd OSDI, pages      [31] C. A. Waldspurger and W. E. Weihl. Stride scheduling: Determinis-
+          107–121, Seattle, WA, 1996.                                                 tic proportional-share resource management. Technical Report TR-
+                                                                                      528, MIT Laboratory of CS, 1995.
+     [11] C. han Lin, H. hua Chu, and K. Nahrstedt. A soft real-time schedul-
+          ing server on the Windows NT. In Proc. of the 2nd USENIX Windows       [32] T. Yang, E. D. Berger, S. F. Kaplan, and J. E. B. Moss. CRAMM:
+          NT Symposium, pages 149–156, 1998.                                          Virtual memory support for garbage-collected applications. In Proc.
+                                                                                      of the 7th OSDI, pages 103–116, 2006.
+     [12] M. Hertz, Y. Feng, and E. D. Berger. Garbage collection without
+          paging. In Proc. of the 2005 PLDI, pages 143–153, 2005.                [33] P. Zhou, V. Pandy, J. Sundaresan, A. Raghuraman, Y. Zhou, and
+                                                                                      S. Kumar. Dynamic tracking of page miss ratio curves for memory
+     [13] S. Iyer and P. Druschel. Anticipatory scheduling: A disk scheduling
+                                                                                      management. In Proc. of the 11th ASPLOS, pages 177–188, Boston,
+          framework to overcome deceptive idleness in synchronous I/O. In
+                                                                                      MA, Oct. 2004.
+          Proc. of the 18th SOSP, pages 117–130, 2001.
+
+
+
+
+86           8th USENIX Symposium on Operating Systems Design and Implementation                                                      USENIX Association
+

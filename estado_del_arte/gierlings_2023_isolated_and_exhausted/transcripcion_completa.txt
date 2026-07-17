@@ -1,0 +1,1271 @@
+     Isolated and Exhausted: Attacking Operating
+       Systems via Site Isolation in the Browser
+Matthias Gierlings, Marcus Brinkmann, and Jörg Schwenk, Ruhr University Bochum
+        https://www.usenix.org/conference/usenixsecurity23/presentation/gierlings
+
+
+
+
+         This paper is included in the Proceedings of the
+               32nd USENIX Security Symposium.
+                      August 9–11, 2023 • Anaheim, CA, USA
+                                   978-1-939133-37-3
+
+
+
+
+                                           Open access to the Proceedings of the
+                                            32nd USENIX Security Symposium
+                                                 is sponsored by USENIX.
+                                  Isolated and Exhausted:
+                Attacking Operating Systems via Site Isolation in the Browser
+
+
+                                Matthias Gierlings, Marcus Brinkmann, Jörg Schwenk
+                                               Ruhr University Bochum
+
+
+
+                         Abstract                                                 a.com/1                            a.com/2
+                                                                               c.net   b.org                     b.org    d.dm
+
+Site Isolation [12, 40] is a security architecture for browsers
+to protect against side-channel and renderer exploits by sep-                  c.net    a.com/1     b.org     a.com/2    d.dm
+                                                                                              Process Scheduler
+arating content from different sites at the operating system
+(OS) process level. By aligning web and OS security bound-
+                                                                   Figure 1: Site Isolation optimizes how sites referenced within
+aries, Site Isolation promises to defend against these attack
+                                                                   web pages are mapped to OS processes (cf. Subsection 2.1).
+classes systematically in a streamlined architecture. However,
+Site Isolation is a large-scale architectural change that also
+makes OS resources more accessible to web attackers, and           minimized in Google Chrome through careful usage analysis
+thus exposes web users to new risks at the OS level.               and complex optimizations [40].
+   In this paper, we present the first systematic study of OS
+resource exhaustion attacks based on Site Isolation, in the
+web attacker model, in three steps: (1) first-level resources      Risks of Site Isolation. With Site Isolation, browsers now
+directly accessible with Site Isolation; (2) second-level re-      share responsibility with the OS for the allocation of com-
+sources whose direct use is protected by the browser sandbox;      puting and network resources. But in contrast to most local
+(3) an advanced, real-world attack. For (1) we show how            applications, a browser can be remotely controlled by a web
+to create a fork bomb, highlighting conceptual gaps in the         attacker through the execution of malicious JavaScript code.
+Site Isolation architecture. For (2) we show how to block all      Thus a remote, off-path web attacker may interfere with the
+UDP sockets in an OS, using a variety of advanced browser          local OS, using a browser with Site Isolation as intermediary.
+features. For (3), we implement a fully working DNS Cache             Site Isolation was introduced to protect web applications
+Poisoning attack based on Site Isolation, building on (2) and      from attacks leveraging the underlying OS, and we think
+bypassing a major security feature of DNS. Our results show        that this goal has been achieved. Our work thus targets the
+that the interplay between modern browser features and older       opposite direction to answer the following research question:
+OS features is increasingly problematic and needs further
+research.                                                               Does Site Isolation make operating systems more
+                                                                        vulnerable to web attacks?
+
+1   Introduction
+                                                                   Attacker Model. We use a weak attacker model, the web
+Site Isolation [40] is a security architecture for browsers that   attacker model [2, Sec. II B]. According to [2], web attackers
+provides strong isolation for websites and thus mitigates risks    have no special network privileges – being off-path they can
+from JavaScript, in particular, remote code execution by sand-     not observe, modify or block traffic between other parties on
+box compromises [43] and microarchitectural side-channels          the Internet. However, web attackers can set up and control
+like Spectre [26]. These benefits are achieved by perform-         their own server infrastructure and have “root access” [2] to
+ing all rendering and script execution from different sites in     these servers. When choosing a provider that allows IP Spoof-
+distinct processes, leveraging process security of the OS (Fig-    ing, attackers can use utility programs such as iptables to
+ure 1). Site Isolation is not without costs. The additional        configure spoofed IP addresses (cf. Subsection 6.1). Accord-
+processes required to implement Site Isolation obviously con-      ing to [33], over a quarter of the ASes investigated allowed
+sume system memory and CPU time. This overhead was                 IP spoofing on egress, and two-thirds on ingress. To start the
+
+
+
+USENIX Association                                                                     32nd USENIX Security Symposium            7037
+attack, the victim only needs to visit a web page hosted on        based setup with poor network quality, achieving a success
+one of these servers.                                              rate of 37%, and in a lab environment.
+   In contrast to the (stronger) malware attacker, who can
+directly access OS resources through native code, the web          Known Attacks. Attacks on the OS in the web attacker
+attacker is only allowed to use standard browser APIs. So          model are rare, as JavaScript is an interpreted language that
+more precisely, we ask the following research question:            is strongly contained by the browser sandbox. The arguably
+                                                                   most severe attack is Rowhammer.js, which uses malicious
+     Is a web attacker able to directly control OS re-             JavaScript to inject faults into neighboring system memory
+     sources when Site Isolation is enabled, thereby by-           cells at the hardware level, bypassing all OS and sandbox
+     passing the current browser sandboxes?                        memory access restrictions [17]. Another series of attacks
+                                                                   uses side-channels to leak private data from other processes
+This research excludes (trivial) attacks on the browser itself.
+                                                                   or the OS, such as memory deduplication [16], keystroke
+For example, we are interested in DoS attacks against the OS,
+                                                                   interrupts [31], and memory caches [15, 38, 46]. These tech-
+but not in DoS attacks against the browser process alone.
+                                                                   niques have in common that they do not attack the sandbox
+                                                                   mechanism, but instead target the machine hardware directly.
+Bypassing Browser Sandboxes. Controlling OS resources                 More common are attacks against the browser sandbox
+is fairly simple in the malware attacker model, but a web          itself, such as JIT spraying [14] or fuzzing [49]. After achiev-
+attacker is restricted by the intentional security boundaries of   ing native code execution within the sandbox process, the
+the browser sandbox. This sandbox limits access to resources       attacker may escalate the attack to the OS in the malware at-
+by consumption quotas (e.g. HTML Web Storage), asserting           tacker model. One side-channel attack that leaks data from the
+implicit authorization (e.g. by a trusted event), or asking for    sandbox is an implementation of Spectre in JavaScript [44].
+explicit consent (e.g. through popups). We show how to                In 2008, Dan Kaminsky [24] showed that in the web at-
+overcome these obstacles for a web attacker in three steps:        tacker model, DNS security can be broken by DNS Cache
+   1. First-Level Resources. We show how to use Site Isola-        Poisoning. UDP port randomization was implemented as
+tion to implement a fork bomb DoS attack in JavaScript that        the only countermeasure against the Kaminski attack. Previ-
+circumvents browser watchdogs against simple DoS attacks           ous attacks defeating UDP port randomization relied on IP
+on CPU and memory. This is a direct consequence of Site Iso-       fragmentation and timing side-channels [35, 45, 50]. These
+lation since extra processes are spawned for all sites included    attacks target intermediate devices like home routers or DNS
+in the browser window. However, we show how to optimize            servers directly. Client-side DNS Cache Poisoning attacks
+this process by using IPv6 addresses as sites (Table 1, 1.).       target end-user devices such as desktop computers and lap-
+   2. Second-Level Resources. Second-level OS resources            tops. They have been analyzed by Alharbi et al. [3], but only
+are resources that can not be allocated directly through           in the stronger malware attacker model.
+JavaScript or web objects. In this work, we analyze UDP
+network sockets. Single network sockets can be opened eas-         Main Insights. The main result of this paper is that with
+ily, e.g. by accessing a QUIC-enabled webserver, but through       novel browser features, the boundary between the browser
+techniques like multiplexing and timeouts, the browser sand-       and the OS becomes weaker. Attacks that were previously
+box prevents the opening of extra sockets. Moreover, many          only known in the malware attacker model may now become
+open sockets typically cause noisy network traffic and in-         feasible in the web attacker model, allowing remote, off-path
+crease the CPU load until the browser becomes unresponsive.        web attackers to compromise the OS. Our research only re-
+We use novel techniques exploiting WebRTC (Table 1, 2.–            veals the tip of the iceberg and future work may show that the
+5.) to circumvent these sandbox and performance restrictions.      mitigations introduced by browser vendors were insufficient.
+Combined with the simplified method to spawn new processes,           1. Fork Bomb and UDP Port Blocking. Despite the opti-
+this allows us to block all available UDP source ports on a        mization efforts by Google, the site concept is still too fine-
+victim system.                                                     grained and allows for effective DoS attacks, such as the fork
+   3. Advanced Attack. We show how to use Site Isolation           bomb. With Chrome and Edge, it was possible to use Site Iso-
+and the attacks on first- and second-level resources to imple-     lation and WebRTC to block all UDP ports in Windows with a
+ment DEMONS, a Cache Poisoning attack against the OS               single visible browser window. The root cause is that each IP
+DNS resolver cache, in the web attacker model. We use the          (v4 or v6) address still counts as a separate site. The main dif-
+fact that we have blocked all UDP ports, in combination with       ference between the tab process isolation introduced in 2009
+the techniques from Table 1, 6.–8., to release a pair of UDP       and Site Isolation is that tab isolation limits OS resources
+ports and learn their port numbers, which must then be used        per visible window. At the same time, opening additional
+by the OS for DNS. Our off-path attacker is thus able to           windows through pop-ups was limited by introducing trusted
+circumvent UDP port randomization, a major DNS security            events. Thus, users were able to control the resource con-
+feature. We evaluate this attack twice: in a realistic Internet-   sumption of web applications via the visible components of
+
+
+
+7038    32nd USENIX Security Symposium                                                                       USENIX Association
+      Objective                Malware Attacker                            Web Attacker                                                    Sec.
+ 1.   Create many processes    Use standard OS API to fork processes.      Creates sites using IPv6, bypassing SI process consolidation.   new: 3.1
+ 2.   Allocate UDP Ports       Use standard OS API to create sockets.      Indirectly via WebRTC connections.                              new: 3.2
+ 3.   Keep Connections Alive   Control socket lifetime over OS API.        Use pending connections and data streams.                       new: 3.2
+ 4.   Avoid Network Traffic    n/a                                         Use local WebRTC connections.                                   new: 3.2
+ 5.   Avoid DoS on CPU         n/a                                         Use stream demultiplexing and munging.                          new: 3.2
+ 6.   Find DNS Query Port      Use standard OS API to observe ports.       SDP offer analysis, and exhaust & single release.               new: 5.1, A.1
+ 7.   Leak DNS Query Port      Use standard OS API to leak over network.   Use standard browser API to leak over network.                  well-known
+ 8.   Trigger DNS Request      Use standard OS API to start DNS lookup.    Indirectly via XMLHttpRequest.                                  well-known
+
+Table 1: DEMONS combines Site Isolation (SI) with eight additional browser techniques, six of these novel, to bypass the
+sandbox. Together these techniques, which are accessible in the web attacker model, replace the local malware attacker in [3].
+
+
+the browser. With Site Isolation, this is no longer the case.                    3. We identify conceptual weaknesses in the Site Isola-
+We therefore propose, implement, and evaluate a concept to                          tion architecture and discuss countermeasures against
+limit resource consumption rooted in the visible components.                        resource exhaustion attacks based on Site Isolation, as
+   2. DNS Cache Poisoning. We show that a web attacker                              well as mitigations to the DEMONS attack. Specifi-
+can not only block all available UDP ports but also release                         cally, we develop, implement, and evaluate an efficient
+a single pair of known ports, defeating UDP port random-                            mitigation to resource exhaustion attacks (Section 7).
+ization. In response to our findings, Chrome and Edge now
+limit the number of UDP ports that can be allocated globally                 Responsible Disclosure. We reported our findings to
+by the browser (i.e. across all windows and tabs) to 6000,                   Google, Microsoft, and Mozilla. Google assigned CVE-2020-
+so that UDP port randomization remains effective at the OS                   6557 and now limits the number of allocated UDP sockets
+level. While this mitigates the DEMONS attack this may not                   across all renderer processes. Microsoft also adopted this
+be sufficient in the future. When UDP port randomization                     solution in the Chromium-based Edge browser. Google has
+was introduced, the designers considered adding 16 bits of                   also awarded a bug bounty to the authors for their findings.
+randomness for the DNS resolver alone to reduce the suc-
+cess probability of a web attacker to one in 232 . However,
+                                                                             Artifacts. All artifacts are available as Open Source.1
+Windows only has 214 freely available UDP ports, shared
+among all processes, resulting in a success probability of one
+in 216+14 = 230 . Our web attacker could control all but two of              2     Background
+these ports, with a success probability of one in 216+1 = 217 .
+Even with the global limit, we still could control slightly less             2.1      Site Isolation
+than 6000 ports, enhancing the success probability to one in
+216 · (214 − 6000) ≈ 229.34 . This may still allow for future                A decade ago, all major browsers abandoned the single pro-
+attacks. As a lasting countermeasure, we think that a critical               cess paradigm and used separate processes for the rendering
+re-evaluation of the OS socket API is necessary since the                    of different browser windows and tabs. Content from differ-
+current API is not designed to be used as an entropy source.                 ent sites however was still rendered in the same process, e.g.
+                                                                             when a cross-origin iframe was embedded in the webpage.
+                                                                                Site Isolation [40] improves content isolation based on
+Contributions. We make the following contributions:
+                                                                             process separation significantly because a new process is
+ 1. We describe how Site Isolation in browsers can be ex-
+                                                                             created for every site. For example, if a web page contains
+    ploited for novel resource exhaustion attacks against the
+                                                                             a cross-site iframe, at least two processes are used for ren-
+    client OS by a web attacker (Section 3). We provide
+                                                                             dering. The site concept is more coarse-grained than the
+    an evaluation of these attacks and show that they can
+                                                                             better-known web origin concept: To extract the site from a
+    be used to implement DoS attacks against the operating
+                                                                             web origin, only the protocol and the main domain are consid-
+    system or the web browser (Section 4).
+                                                                             ered, subdomains and port numbers are omitted. For example,
+ 2. To show that possible attacks go beyond DoS, we im-
+                                                                             https://a.com:4444 and https://b.a.com refer to dif-
+    plement DEMONS, a DNS Cache Poisoning attack that
+                                                                             ferent web origins but the same site. Sites referenced by IPv4
+    stealthily poisons the DNS cache of the Windows oper-
+                                                                             or IPv6 addresses instead of a domain name are considered
+    ating system, in the web attacker model. (Section 5). We
+                                                                             distinct sites rendered in separate processes.
+    evaluate DEMONS on the Internet and in a lab setting
+                                                                                Since each process induces overhead in the OS, Site Isola-
+    (Section 6). We show that under real-world conditions,
+                                                                             tion in Chrome has been optimized to reduce the total number
+    DEMONS has a success rate of 37%. In the lab, we
+                                                                             of processes (Figure 1) with process consolidation. Suppose
+    compare DEMONS to a malware-based attack, which
+    has a slightly better success rate.                                      1   https://git.noc.rub.de/gierlmds/isolated-and-exhausted
+
+
+
+
+USENIX Association                                                                                  32nd USENIX Security Symposium                 7039
+two windows (or tabs) are open in the browser, where the doc-          IPv4/IPv6. Port numbers are grouped into three distinct use
+ument is loaded from the same site a.com. For each of these            cases [7]. System ports (0–1023) are associated with well-
+windows, a separate process is started. Additional processes           known internet services (e.g., 53 for DNS). User ports (1024–
+are started for each iframe loaded from a different site; how-         49151) may be statically assigned for custom applications.
+ever, if the same site is loaded into iframes in two different         Ephemeral ports (49152–65535) are used by clients for a sin-
+windows (e.g., site b.org in Figure 1), only a single process          gle connection, such as a DNS query. Usually, the OS picks an
+is running which renders both iframes.                                 arbitrary unallocated number from the ephemeral port range.
+   Site Isolation has been implemented by Google Chrome,               Once a port number is bound to a socket, it uniquely identifies
+which recently also became the base for Microsoft Edge.                the socket over its lifetime. Actual port ranges can deviate
+Mozilla rolled out their own Site Isolation implementation             from the above standards. For example, Linux typically uses
+with Firefox 94 [13].                                                  32768–60999 for ephemeral ports.
+
+
+2.2    Exhaustible OS Resources                                        2.3    Domain Name System (DNS)
+The OS manages the resources of a computing device, such               DNS is used for name resolution, a query-response protocol
+as CPU time, main memory, and network sockets. Benign                  to translate domain names to IP addresses. We assume that
+applications like browsers should cooperate with the OS to             the web browser uses the DNS resolver of the OS, which is
+achieve a fair sharing of resources with other benign applica-         configured with the IP address IPNS of a default name server.
+tions. Malware, on the other hand, may refuse cooperation                  This is how a domain is resolved: 1. If the cache contains
+and may try to use or block as many OS resources as possible.          the IP address of the domain, it is returned. 2. Else, the
+   Processes. OS processes are commonly identified by their            resolver creates a UDP socket S = (IPNS , 53, IPsrc , Portsrc ),
+globally unique process ID (PID), which on many systems                where 53 is the default port for DNS, IPsrc is the resolver’s
+is a 32-bit integer. However, process creation is resource             external IP address, and Portsrc is a random ephemeral port
+intensive, so RAM and CPU will be overloaded long before               chosen by the OS for this connection. 3. The resolver sends a
+the system runs out of PIDs. A common attack on process-               query to the name server over S, including a random 16-bit
+related resources is a fork bomb [5], which is a program               transaction ID (TXID). 4. The name server receives the query,
+that recursively spawns an exponentially growing number of             and sends a response including the TXID. 5. The resolver
+clones. The attacker’s goal is to overload the system to the           receives the DNS response and verifies its content and the
+point where it becomes unresponsive, e.g. due to memory                TXID. If the response is valid, it is cached up to its time-to-
+page swapping or task scheduling latencies.                            live (TTL), and the result is returned to the browser. 6. If
+   Network Sockets. A TCP or UDP network socket is ab-                 the response is invalid, the resolver discards it. In Windows,
+stractly defined as a 4-tuple (IPdest , Portdest , IPsrc , Portsrc )   the procedure is repeated from the first step up to five times,
+which identifies a network connection between two endpoints            after which an error is returned. In Linux and macOS, the
+after a packet is received. However, in practice, the creation         procedure is repeated from step 5 until a valid response is
+of operating system sockets through the Berkeley socket API            received or a timeout occurs.
+(used in Windows, macOS, and Linux) is a multi-step pro-                   The queried name server can either return the (authoritative
+cess where often some parts of the 4-tuple are left undefined          or cached) result directly, recursively query another name
+until a packet is fully transferred. As a consequence, the OS          server or indicate in the result that the client should iteratively
+makes some simplifying assumptions. In particular, a source            query another name server.
+port number is reserved independently of the destination IP                DNS Cache Poisoning. In 2008, Dan Kaminsky [24] dis-
+and port number. If one application allocates a socket for a           covered a DNS Cache Poisoning off-path attack on name
+specific local port number, no other application can allocate          servers performing a recursive lookup to an authoritative
+another socket for that port using the Berkeley socket inter-          name server by brute-forcing the 16-bit TXID of the request
+face. This can lead to port number exhaustion because only a           and sending a spoofed response with a malicious IP address.
+small subset of possible 4-tuples is available to applications.        If the attacker can guess the correct TXID before the answer of
+   We note that TCP and UDP port numbers do not share                  the authoritative name server arrives, the victim name server
+the same namespace, nor do IPv4 and IPv6. In some cases,               caches the malicious entry, i.e., its cache is now poisoned.
+applications use dual-stack allocations to register IPv4 and           The primary mitigation for the Kaminsky attack is source port
+IPv6 port numbers at the same time. We mainly consider                 randomization (SPR) [6]. The goal is to increase the entropy
+UDP in this work, because it is an attractive target for packet        of DNS queries, making it harder for an off-path attacker to
+injection, while TCP connections are already protected at the          successfully spoof a DNS response. Other countermeasures,
+OS level by sequence numbers with a random start value.                such as 0x20 encoding [48], exclusive DNS over TCP [10], or
+   System Ports, User Ports, and Ephemeral Ports. There                DNS over HTTPS [20], are not as widespread due to compat-
+are 65536 ports for each combination of TCP/UDP with                   ibility concerns. Recently, different techniques to circumvent
+
+
+
+7040    32nd USENIX Security Symposium                                                                            USENIX Association
+SPR have been proposed: IP defragmentation [35, 45, 50] and          IP1 , ..., IPN . The webpage (recursively) contains a total of N
+blocking client OS source ports [3].                                 iframes with the source attribute set to http://[IPi ], for
+                                                                     i = 1, ..., N. The webpage itself contains one iframe with
+                                                                     its source attribute pointing to IP1 , and each loaded iframe
+3     Resource Exhaustion Attacks Based on Site                      contains two other iframes pointing to different IP addresses.
+      Isolation                                                      With Site Isolation, loading this web page creates N processes
+                                                                     on the victim system, leading to a fork bomb in the OS. In
+Typically, benign applications only spawn a fixed number of          our implementation (Subsection 4.1), we use IPv6 addresses.
+processes to cooperate with the OS. Web browsers are an                 Novelty. While it is possible to manually assign domain
+exception: they create a new process for each window or tab          names or IP addresses to a webserver, we implemented a
+that is opened. In theory, this enables web browsers to allocate     much faster method using non-local binds. Non-local binds
+arbitrarily many resources, in practice, however, there is a         are an advanced feature of the Linux kernel IP stack that
+limit on the number of windows and tabs that can be opened           allows the server to listen to many IP addresses without as-
+automatically by a malicious web application, and a trusted          signing them to the network interface one by one.
+event (e.g. a mouse click) is needed to get the permission to
+open more. In contrast, if a user manually opens dozens of
+windows, the OS or browser should not prevent that, as the           3.2    Second Level Resource Exhaustion: UDP
+expressed intent of the user action implies authorization to                Port Exhaustion
+allocate these resources. In a user study from 2009 [11], the
+                                                                     Blocking UDP Ports via Browser APIs. We know about
+maximum number of simultaneously open tabs was 42.
+                                                                     two browser APIs that can be used to block UDP ports from
+   With Site Isolation, this simple relationship between win-
+                                                                     web pages: QUIC and WebRTC. Initial experiments with
+dows or tabs on the one hand and OS processes on the other
+                                                                     QUIC were inefficient due to the high computational cost
+hand no longer holds. Instead, a web browser supporting Site
+                                                                     associated with a large number of parallel QUIC handshakes.
+Isolation may now open several processes per window or tab
+                                                                     Thus, we focused on WebRTC.
+without user interaction. Major efforts have been made [40]
+                                                                        WebRTC. WebRTC is an open web platform for real-time
+to limit resource use even with Site Isolation, but in this paper,
+                                                                     communication in telephony and video conferencing applica-
+we show that these efforts can still be circumvented.
+                                                                     tions. Essentially, it gives websites access to audio and video
+   Furthermore, before Site Isolation, the browser maintained
+                                                                     peripherals (camera, microphone), and provides an API to
+control over the allocation of secondary resources, such as
+                                                                     stream the data from these devices to other endpoints support-
+network sockets allocated through WebRTC connections, by
+                                                                     ing WebRTC using UDP or TCP. Metadata is exchanged using
+limiting their number per process. As the number of pro-
+                                                                     the Session Description Protocol (SDP [18], see Figure 8 for
+cesses was bound, so was the number of secondary resource
+                                                                     an example). The format is highly flexible and allows both
+allocations. However, with the ability of the web attacker to
+                                                                     ends to negotiate the number and type of media channels (au-
+allocate an arbitrary number of processes, limits on secondary
+                                                                     dio, video, or data), possible communication endpoints (e.g.,
+resources can also be overcome by exploiting a combination
+                                                                     P2P, or use of a TURN server), and multiplexing options. In
+of novel Site Isolation features, edge case configurations, and
+                                                                     our attack implementation, we exclusively use data channels
+implementation bugs. In this section, we present the general
+                                                                     because video and audio channels require explicit permission
+ideas behind our evaluation. A detailed description can then
+                                                                     from the user and consume more resources, increasing the
+be found in Section 4.
+                                                                     footprint of the attack unnecessarily.
+                                                                        Local WebRTC in Offer State. Commonly, SDPs are ex-
+3.1    First Level Resource Exhaustion: Fork                         changed between endpoints through a signaling service. Our
+       Bomb                                                          attacks solely rely on local endpoints and thus do not involve
+                                                                     a signaling service. Because we never complete any WebRTC
+Create Processes by Creating Sites. With Site Isolation,             handshake, we also do not need a peer object. Instead, we
+a web-attacker has the ability to create an arbitrary number of      only create local WebRTC objects, put them into the offer
+processes, despite the optimizations and sandbox restrictions        state so that they allocate some UDP ports in preparation
+in the browser. This can be used to perform a browser-based          for the handshake, and then let the objects sit idle, keeping
+DoS attack that works similar to a fork bomb, but does not           only a reference to prevent garbage collection. From our
+require shell access. The root cause for this issue is that an       experiments, this is the most lightweight way to use Web-
+attacker can easily create many sites (Subsection 2.1) through       RTC objects for port allocation, although other configurations
+the use of distinct domain names or IP addresses, and each           might also work.
+site is rendered in a different process.                                WebRTC Objects Allocate an Even Number of Ports.
+   Attack Outline. An attacker hosts a malicious web-                During the initial examination of individual WebRTC objects
+page which is assigned a large number N of IP addresses              with a single data channel, denoted by WebRTC[p] in Table 2,
+
+
+
+USENIX Association                                                                     32nd USENIX Security Symposium          7041
+we found that a single (non-multiplexed) data channel in a          (Kubuntu 18.04.5 LTS), we used Chromium (83.0.4103.106),
+WebRTC object allocates not one but two UDP ports: one for          which is the Open Source version of Chrome, and Firefox
+interactive connectivity establishment using the ICE/STUN           (Nightly 86.01a). Edge is not available for Linux, so we had
+protocol and one for data transfer using SCTP-over-DTLS.            to exclude it from that platform. An overview of the results
+ICE/STUN can not be disabled in the browser because it is           can be found in Table 2. Yellow cells indicate settings where
+also used to verify communication consent (see section 4.2          intentional browser limits could be bypassed. Red cells with
+in [41]) and thus serves as a security mechanism. In conse-         strong borders indicate successful attacks (either fork bomb
+quence, WebRTC objects can not allocate ports individually          or UDP port exhaustion).
+but only in pairs.
+   WebRTC Data Channels and Multiplexing. Chrome al-
+locates a thread for every WebRTC object, causing a high load
+                                                                    4.1    Fork Bomb Evaluation
+with many WebRTC objects. Thus, we looked for ways to               We measured the number of processes created while the
+reduce the number of WebRTC object creations for the same           browser attempts to render the iframe tree until the browser
+number of allocated UDP ports.                                      crashes, the OS becomes unresponsive, or no new processes
+   Our measurement results in Table 2 document the effect of        are created. Both Windows and Linux can use disk space as
+adding multiple data channels to the same WebRTC object,            virtual memory, which may change the number of processes
+denoted by WebRTC[u] . Simply adding data channels did              that can be created in a system. To evaluate this, we repeated
+not lead to more port allocations, because by default all data      the measurement with “swap off” and “swap on”. Windows
+channels are multiplexed over the same connection.                  dynamically calculates the swap size based on the disk size,
+   However, multiplexing can be disabled for WebRTC. A fea-         so we included two different disk configurations. On the
+ture of the WebRTC programming interface allows JavaScript          other hand, Kubuntu Linux uses a fixed 1 GB swap partition
+to edit (or munge) the SDP generated by the browser locally         by default. For every combination of (browser, OS, swap
+before offering it to the receiving end. Based on this insight      configuration), the measurement was repeated five times, and
+we made two modifications: First, we disabled multiplex-            Table 2 shows the median number of created processes.
+ing by removing the BUNDLE=0 option [21] from the SDP.                 Without Site Isolation, only a small number of processes
+Second, we added copies of the data channel with their own          were created, and we could not overload the browser or OS
+unique identifiers mid (see Figure 8). We denote the resulting      for any of the tested browsers on Windows or Linux.
+WebRTC objects with WebRTC[m] in Table 2.                              With Site Isolation enabled, we could reliably crash the
+   Attack outline. The attacker allocates many first level Web-     browser () or even – in more than half of the cases – make
+RTC objects until an error message indicates that the per-          the operating system unusable (F) (see Appendix C).
+process limit has been reached. Depending on the SDP, each
+WebRTC object causes the allocation of two or more UDP
+port numbers at the second level. Using Site Isolation, the         4.2    UDP Port Exhaustion Evaluation
+attacker can then scale up the attack by repeating it in multiple   Chrome and Edge without Site Isolation. The measured
+processes, leading to resource exhaustion of the ephemeral          results for Chrome were identical on Windows and Linux. Ev-
+UDP port table in the OS.                                           ery renderer process allows the creation of at most 500 Web-
+   Novelty. We describe new methods to stealthily block many        RTC objects at the same time. With un-munged WebRTC[p]
+UDP ports via browser APIs. Our technique involves the              or WebRTC[u] objects, we can allocate two UDP ports per
+(mis-)use of WebRTC, using data streams to avoid detection,         WebRTC object, of at most 1000 UDP ports per renderer pro-
+pending connections to keep the ports blocked, and loopback         cess (window or tab). Using a munged WebRTC[m] object,
+connections to avoid network traffic. Disabling multiplexing        we bypass this limit and allocate up to 3000 UDP ports per
+through munging reduces load on the victim system while             renderer process.
+simultaneously increasing the attack speed.                            Chrome and Edge with Site Isolation. Since we were
+                                                                    able to allocate 3000 ports per process, we expected that
+4   Evaluation of Resource Exhaustion Attacks                       this number can be multiplied by the number of site-based
+                                                                    processes. On Windows, this strategy succeeds in exhausting
+We evaluated the effect of Site Isolation on first and second-      the UDP ephemeral port range at the OS level completely (at
+level resource exhaustion attacks against Windows and Linux.        most one open port due to allocation in pairs), using any of
+For Windows 10 (1909 Build 18363.815), we used the produc-          the WebRTC object variants ( ). On Linux, we also could
+tion version of two popular web browsers, Google Chrome             exceed the browser allocation limit for UDP ports using any
+(83.0.4103.106) and Microsoft Edge (83.0.478.45, based on           of the WebRTC variants, and allocate about 8000 UDP ports
+Chromium), as well as the development version of Firefox            ( ) instead of 3000 ( ). However, at that point the browser
+(Nightly 86.01a) that implements an experimental prototype          entered a failure state, where no more ports could be allocated
+for Site Isolation called Project Fission [12]. For Linux           until the browser was restarted.
+
+
+
+7042    32nd USENIX Security Symposium                                                                       USENIX Association
+                                    Browser          Chrome3 /Chromium4                     Edge5                               Firefox6
+    OS                                  Sites   Single            Multiple        Single         Multiple             Single           Multiple
+                               Site Isolation      -          off          on        -       off          on             -         off          on
+                              swap large[a]       8           5         837  F     7          5          822 F         10         7         876  F
+                Processes     swap small[b]       8           5         522  F     7          5         514  F        10         7          457 
+
+
+    Windows2
+                              swap off            8           5         275  F     7          5          267          10         7          200 
+                            WebRTC[p]
+                Sockets
+                            WebRTC[u]
+                            WebRTC[m]                                                                                    -         -            -
+                            swap on[c]           12           10        435  F     -          -            -            9         6          233 
+                Processes
+                            swap off             12           10         446 F      -          -            -            9         6          271 
+
+    Linux1
+                          WebRTC[p]                                                 -          -            -
+                Sockets
+                          WebRTC[u]                                                 -          -            -
+                          WebRTC[m]                                                 -          -            -            -         -            -
+  Allocation over intentional browser limits.                Exploitable in a fork bomb or DEMONS attack.
+ The browser crashes. F The operating system becomes unusable.
+Ports blocked: ≤ 10%           ≤ 25%       ≤ 50%        ≈ 100% (at most one open port due to allocation in pairs)
+WebRTC objects: [p] with a single data channel, [u] with multiple data channels, [m] with munging.
+OS versions: 1 Windows 10 (1909 Build 18363.815), 2 Kubuntu Linux 18.04.5 LTS (Kernel 5.4.0-62)
+Swap configuration: [a] automatically managed (240 GB disk), [b] automatically managed (64 GB disk), [c] 1 GB swap partition.
+Browser versions: 3 Chrome 83.0.4103.106, 4 Chromium 83.0.4103.0, 5 Edge 83.0.478.45, 6 Firefox Nightly 86.01a
+Hardware configuration: Dell Latitude 5280, Intel Core i5 7200U, 8 GiB RAM, 240 GiB M.2 SATA SSD
+
+Table 2: Site Isolation resource allocations in browsers and their adverse consequences. The columns show different browsers,
+attack variants (single vs. multiple sites), and Site Isolation configurations (off/on). The rows describe the OS, resource type, and
+variant. Table cells for processes show the maximum number of processes we could allocate, and a symbol indicating if crashes
+of the browser and/or OS were observed (cf. Appendix C for details). Table cells for sockets describe the percentage of the UDP
+sockets that could be allocated. For example, in Windows with a small swap space configuration, we observed that Firefox with
+Site Isolation visiting the multi-site attack allocated 457 processes, and then crashed. As another example, in Windows with
+Chrome, WebRTC[m] could be used to bypass browser limits for socket allocation even with a single-site attack, but Site Isolation
+and a multi-site attack are required to allocate enough sockets for a DEMONS attack.
+
+
+   Firefox. In contrast to Chrome and Edge, Firefox validates                     source port randomization is disabled through second-level
+the munged SDP and rejects our two modifications with an                          resource exhaustion (3.2, 4.2). During the poisoning phase,
+error message. This means we had to exclude WebRTC[m]                             malicious entries are injected into the DNS resolver cache
+objects from our evaluation for Firefox.                                          of the victim’s client OS. Only the first phase is novel, the
+   As for the total number of WebRTC and UDP port alloca-                         second phase is similar to other DNS Cache Poisoning attacks,
+tions, Firefox globally limits the total number of allocated                      such as [3, 24, 35]. We only evaluate Windows 10 as a client
+UDP ports to 1000 across all browser processes, regardless                        OS in this work, and refer to [3] for how to treat differences
+of Site Isolation. Thus with Firefox, UDP ports in the OS can                     in Linux and macOS.
+not be exhausted ( ).
+
+
+5              Advanced Attack: DNS-Poisoning by Ex-                              Architecture. The infrastructure required by the attacker
+               haustive Misappropriation of Network                               consists of the following components (see Figure 3):
+               Sockets (DEMONS)                                                     1. Web Server: The web server hosts the malicious web
+                                                                                       page that will be delivered to the victim’s browser.
+DEMONS is a novel Cache Poisoning attack against the                                2. Poisoner: A system that, upon receiving a signal from
+DNS resolver of the client OS, in the web attacker model.                              the attacker’s web application, sends a large number of
+DEMONS disables UDP port randomization by blocking all                                 spoofed DNS responses with randomly chosen TXIDs
+client-side UDP ports except two, and by informing the poi-                            to the victim. Optionally, multiple poisoners can run
+soner about these open ports (see Figure 2). Disabling UDP                             simultaneously.
+port randomization was introduced by Alharbi et al. [3] in an                       3. Malicious Server: The system whose IP address is in-
+unprivileged malware attacker model. Table 1 summarizes                                serted into the victim’s DNS cache under the target do-
+the difference between their work and ours.                                            main. After a successful attack, the malicious server can
+   DEMONS consists of two phases. In the setup phase,                                  impersonate the benign target server to the victim.
+
+
+
+USENIX Association                                                                                    32nd USENIX Security Symposium             7043
+                   Client OS                                                            Default NS      Impact. DEMONS allows for the attacker to gain control
+                         call                                    Query(txid, p0)
+     Browser                        Resolver                                                Resolver    over the network communication of any process in the OS that
+                       return                                  Response(txid, p0)
+                                                                                                        relies on DNS security. While most web applications today
+                                      Cache                                                  Cache      rely on TLS for security, this is not true for all applications in
+                                                         ...
+                                                                                                        general. For example, by rerouting the Network Time Proto-
+                            Response(txid1, p0)                       Response(txidn, p0)
+  Deliver attack website                                                                                col (NTP [36]), the attacker can get control over the system
+  Report unused UDP port p0, trigger DNS Query
+                                                                             DEMONS
+                                                                                                        time, potentially influencing certificate validation or license
+                                                                                                        management. Other examples are email protocols such as
+Figure 2: Resolution of www.example.com and the off-path                                                SMTP [25], IMAP [9], and POP3 [47], as well as the file
+DEMONS attacker sending responses to the victim.                                                        transfer protocol FTP [39], used for anything from firmware
+                                                                                                        updates to transferring sensitive business documents. Al-
+             Victim                                                                  DEMONS             though these protocols can be protected by TLS, they are often
+             Browser
+                                                                                                        used completely unsecured. Also, some software repositories
+                                         http://evil.org                           Webserver            use HTTP rather than HTTPS for automatic download [28].
+      216–1 WebRTC sockets
+                                                                              (www.evil.org)
+                                                  pQRY                                                  In all these cases, client-side DNS Cache Poisoning can give
+             WebSocket
+                                                                                                        the attacker access to a wide range of attacks on data privacy
+          XMLHttpRequest                                                                                and system integrity.
+            DNS query for
+               “bank.com”
+                                                                                    Poisoner
+                                            DNSResponse1
+                                            DNSResponse2
+                                                                                                        5.1    Setup Phase
+                                                                                   DNSResponsei
+     OS DNS-Resolver                               ...
+                                                                          (IPM, pQRY, idTX, bank.com)
+                                            DNSResponsen
+                                                                                                        Source port randomization in DNS depends on free ephemeral
+                                                                                                        UDP ports. With an increasing number of allocated UDP
+   Cache entry                                                           Malicious Server               ports, this pool shrinks and eventually runs empty, effectively
+   for “bank.com” after                                                     IPM = 2008::db8:1
+   successful attack                                                                                    reducing the randomness in DNS queries back to the 16 bits
+                                                                                                        provided by the TXID. However, at least one UDP port
+        Figure 3: Architecture of the DEMONS attacker.                                                  must remain unallocated, or no DNS query can be sent and
+                                                                                                        poisoning is not possible. So, the goal of the web attacker
+                                                                                                        during the setup phase is to force the browser to allocate all
+Limitations. DEMONS requires the attacker to imperson-                                                  but one or a small number of known UDP ephemeral ports.
+ate a benign default name server by spoofing the source IP                                              This requires two steps:
+address in forged DNS responses. This is easy for an at-                                                  1. Exhaustion: The attacker allocates (almost) all available
+tacker to achieve because many providers do not filter IP                                                    ports by creating a sufficient number of port-allocating
+spoofing [33]. However, private IP addresses are not internet-                                               browser objects, e.g. WebRTC connections. This pro-
+routable, therefore the position of the attacker’s poisoner                                                  cess is finished when error messages indicate resource
+relative to the victim’s default name server determines the                                                  exhaustion, or when so many objects were created that
+feasibility of DEMONS. We distinguish three cases:                                                           they would surely consume at least the maximum num-
+   1. The attacker’s poisoner and the victim’s name server are                                               ber of ephemeral ports available in the OS, in the event
+      located in the same local network.                                                                     that no error messages are seen (silent failure).
+   2. The attacker’s poisoner and the victim’s name server are                                            2. Single release: The attacker destroys a single object,
+      not located in the same local network.                                                                 thereby releasing one (or a small number) of ports back
+        (a) The victim’s name server has a public IP address.                                                into the OS pool. The attacker must be able to determine
+        (b) The victim’s name server has a private IP address.                                               the port numbers that were associated with the object,
+IP spoofing is feasible in cases 1 and 2(a). Case 1 is a typical                                             either directly with JavaScript, or, in the case of a remote
+public network scenario; the attacker and victim both use                                                    connection, by observing the destruction at the remote
+the same public network (e.g. in cafes, airports, libraries,                                                 end controlled by the attacker.
+schools, etc.). Case 2(a) occurs in large business and cloud                                               At this point, the OS has one or few free UDP source
+scenarios or in cases where home users use a public name                                                ports available, and the attacker knows their numbers. In case
+server. Case 2(b) is the default for most home users connected                                          the port numbers were read out by the attacker script in the
+to the internet via a home router. Home routers typically run                                           victim’s browser, they can now be leaked to the poisoner in
+a local name server which is advertised to all attached devices                                         preparation of the poisoning phase, e.g. through a WebSocket
+via DHCP. If users choose to change this default behavior,                                              or an HTTP request to the attacker’s webserver. If the port
+e.g., to defend against [50], or to bypass provider DNS-level                                           numbers were observed at the remote end of a connection,
+filtering, they transition to case 2(a) and become vulnerable                                           the observing service has to leak them to the poisoner instead.
+to DEMONS.                                                                                              See Subsection A.1 and Subsection A.2 for details about the
+
+
+
+7044       32nd USENIX Security Symposium                                                                                                          USENIX Association
+setup phase in our implementation of the DEMONS attack.                                          wise, the DNS resolver embedded in the OS would not be able
+   We will now describe in detail how the OS resource exhaus-                                    to send any more DNS queries, and the attack would result in
+tion attacks based on Site Isolation can be used to implement                                    DoS instead of a successful DNS Cache Poisoning. This is
+an efficient setup phase for the DEMONS attack. The attack                                       why the attacker created the RTC0 object before starting the
+starts with a victim’s web browser loading the attacker’s web-                                   port exhaustion process. The attacker now determines DTLS0
+site and executing the included malicious JavaScript code (see                                   from RTC0 (cf. Subsection A.1 in the appendix) and leaks
+Figure 4). This script performs two tasks:                                                       the port number to the poisoner via the WebSocket created in
+  1. Establish a WebSocket for bi-directional communication                                      the setup phase. Finally, the attacker closes RTC0 , releasing
+      with the poisoner. This is used to leak the possible DNS                                   both STUN0 and DTLS0 back into the OS pool.
+      query ports at the end of the setup phase.                                                    The Case of an Odd Number of Free Ports. If the OS has
+  2. Allocate almost all ephemeral UDP ports by the “ex-                                         an odd number of free UDP ephemeral ports at the beginning
+      haustion” and “single release” technique, using a large                                    of the setup phase, the exhaustion phase will be incomplete
+      number of WebRTC objects (cf. Subsection 3.2).                                             because only an even number of ports can be allocated by the
+   Reserving UDP Ports for Later Release. To follow the                                          attacker with WebRTC objects. Thus, one more port LAST
+“exhaust” and “single release” approach of the setup phase,                                      will be left unallocated in addition to STUN0 and DTLS0 . We
+the attacker first creates a local WebRTC object RTC0 with a                                     found experimentally that most of the time this is the port
+single data channel. As explained in Subsection 3.2, this will                                   just before STUN0 , likely an artifact of the mostly sequential
+allocate two UDP ports (STUN0 , DTLS0 ) and reserve them                                         UDP port allocation strategy in Windows. Usually, the attack
+for later release. Note that in Windows almost certainly these                                   starts at a point in time where the port just before STUN0 is
+port numbers are allocated consecutively, so we can assume                                       unallocated, which is LAST := STUN0 − 1. Thus, the poi-
+that STUN0 = DTLS0 − 1.                                                                          soner has to consider the three ports LAST, STUN0 , DTLS0
+                                                                                                 for potential use by the DNS resolver.
+                                                                                      Attacker      Finding the DNS Query Port. Under ideal conditions,
+  Victim                                               Poisoner
+                                                                                     Webserver
+                             https://evil.com                                                    there would only be one free UDP ephemeral port usable
+                                                                         attack.js
+                     ifrm1= addIframe([IPAddr1]:[Port1])
+                                                                                                 by the OS resolver, known to the attacker. However, due to
+                                                                                                 the use of WebRTC objects, we are left with either two or
+                                                                         attack.js
+                                                                                                 three possible source ports after the setup phase, depending
+                              con(1,i) = UDP.connect(
+                                            localhost)                                           on the number of free ports (even or odd) before the attack.
+         i = 0...n
+ ifrm1                       ...
+                                                                                                 To maximize our success rate, we send each spoofed response
+                                                                                                 in the poisoning phase a total of three times, once to DTLS0 ,
+                                                     ifrm2 ... ifrmm-1
+                                                                                                 STUN0 := DTLS0 − 1 and LAST := DTLS0 − 2 each. Be-
+                                                                         attack.js
+                                                                                                 cause packets sent to the wrong source port are silently dis-
+                             con(m,i) = UDP.connect(
+                                           localhost)                                            carded by the OS, the only impact of this change is that we
+         i = 0...n
+ ifrmm                       ...
+                                                                                                 need three times the bandwidth to perform the attack than in
+                                   pQRY= con(m,n).port()
+                                     con(m,n).close()                                            the case of a single free port.
+                         WebSocket.send(pQRY)
+
+
+
+Figure 4: The Setup Phase blocks open ports on the victim’s
+                                                                                                 5.2    Poisoning Phase
+system.                                                                                          The poisoner receives the leaked DNS query port from the
+                                                                                                 malicious JavaScript code over the WebSocket, and waits for
+   Exhausting All Ephemeral UDP Source Ports. Combin-                                            the signal that the JavaScript code is about to trigger a DNS
+ing munged WebRTC objects and Site Isolation, the attacker                                       query for the target domain by the DNS resolver embedded
+can allocate enough UDP ports to exhaust the entire UDP                                          into the victim’s OS. The poisoner then proceeds to the
+ephemeral port pool of the OS. Under Windows 10, six sites,                                      poisoning phase (see Figure 5), which is similar to that of
+each creating one WebRTC object with up to 1500 data chan-                                       other DNS Cache Poisoning attacks [3,24,35]. For clarity and
+nels, are sufficient to achieve port exhaustion. The setup                                       completeness, we include here a description of the poisoning
+phase takes a while to complete, which allows for a race                                         phase as implemented and evaluated in our attack prototype.
+condition where some UDP ports were allocated before and                                            1. Burst of Spoofed Responses: On activation, the Poi-
+released during the setup phase by some unrelated process.                                       soner sends a burst of spoofed DNS responses. Every such
+To safeguard against this, we finish the exhaustion step by                                      response within a burst has a fresh, randomly chosen TXID
+quickly allocating a small number of simple WebRTC objects                                       and resolves the chosen target domain to the IP address of
+RTCn , RTCn-1 , RTCn-2 , . . ., each consuming up to two ports.                                  the malicious server. It is important to note that the first
+   Releasing Two UDP Source Ports. The attacker must now                                         spoofed DNS responses arrive early, i.e., before the matching
+release at least one UDP port back into the OS pool. Other-                                      DNS query is generated. These will be considered unsolicited
+
+
+
+USENIX Association                                                                                                 32nd USENIX Security Symposium         7045
+                                                                       Benign DNS                            Victim                                Poisoner
+and dropped by the victim’s DNS resolver. This maximizes
+                                                                                                                      websocket.send(DNSQueryPort)
+the chance that the malicious response arrives first and the
+                                                                                    XMLHttpRequest(“bank.com”)
+authentic response is never processed by the victim.                                 DNSQuery(“bank.com”)
+
+                                                                                                                                                Malicious DNS
+                                                                                    DNSQueryRetransmission
+   2. Triggering a DNS Request: Once a stream of spoofed                            DNSQueryRetransmission
+                                                                                    DNSQueryRetransmission
+
+                                                                                                                                                Response Burst
+responses is established, the attacker forces the victim to                         DNSQueryRetransmission
+                                                                                   Retransmission limit
+issue a query matching the target domain in the query section                  DNSResponse(“bank.com”)      drop
+of the spoofed responses that are already in transit. The
+JavaScript that is still running in the victim’s browser as part
+of the malicious website generates an XMLHttpRequest to a          Figure 5: DNS retransmissions in Windows during the poi-
+resource hosted on the chosen target domain, e.g., bank.com.       soning phase.
+The sole purpose of this request is to trigger a DNS query to
+                                                                                             Attack Duration              Spoofing Burst
+the target domain, which the browser must resolve before the                                Min Mean      Max         #Responses Duration
+                                                                                                                                                  Success Rate
+
+XMLHttpRequest can be sent.                                         DEMONS (Internet)       15 s   214 s   1162 s           2550       695 ms                    37%
+                                                                    DEMONS (Lab)            32 s   243 s    517 s            525        63 ms                    36%
+   From the moment this lookup is initiated, all spoofed re-        Malware (Lab)            5s    333 s   1586 s            525        50 ms                    57%
+sponses that are in transit towards the victim become poten-
+tially valid because now there exists a query matching the         Table 3: Performance of the web-based DEMONS attack in
+target domain in the query section of the spoofed DNS re-          an Internet setting, in the lab, and in comparison to a malware
+sponses. The only remaining property that can prevent the          attacker. The number of responses in a spoofing burst was set
+victim from accepting a potentially valid response is a mis-       in advance.
+matching TXID.
+   3. DNS Query Retransmissions: At this point, it is impor-       6     Evaluation of DEMONS
+tant to understand how the victim system deals with TXID
+mismatches because the attacker can not expect to guess the        We evaluated DEMONS twice: (1) In an internet setting,
+correct TXID right away. In accordance with [3], we observed       using a hosting service that allowed IP spoofing, but also pro-
+during our experiment that incoming spoofed responses with         vided an unstable network connection. The results exemplify
+mismatching TXIDs trigger an immediate DNS query retrans-          the possible success rate of a real-world attacker, who may
+mission (see Figure 5). A retransmission is a DNS query            also have to cope with such unstable connections. (2) In a
+that is sent out repeatedly to a DNS server in an attempt to       closed lab environment. Here we had optimal control over the
+retry a previously failed DNS lookup. This retransmission is       network, and our results can be reproduced. For comparison,
+repeated up to four times for a single DNS query before the        we also used the lab environment for an unprivileged mal-
+resolver aborts the name resolution with an error. Because the     ware attacker as described by [3], substituting the setup phase
+attacker maintains a steady stream of spoofed responses with       of the DEMONS attacker with that of a malware attacker,
+the burst technique, every retransmission attempt is almost        while preserving all other aspects of the experiment. Table 3
+immediately answered with a spoofed response, long before          summarizes all three evaluations.
+the authentic name server even receives the retransmission.
+   4. Blocking the Correct DNS Response: After four re-            6.1      Setup of Internet Evaluation
+transmissions, the active query is invalidated and responses
+                                                                   Attacker Setup. We deployed the DEMONS infrastructure
+will no longer be accepted, even if their TXID would match
+                                                                   (Webserver, Poisoner, Malicious Server, see Figure 3) at an
+the ID of the original query. This includes the answer of the
+                                                                   internet hosting provider in Moscow that allowed IP spoofing
+benign server, which will also be rejected. Even though the
+                                                                   (April 2021). For these servers, we measured an upstream
+retransmission-limit interferes with the attacker’s ability to
+                                                                   bandwidth that fluctuated between 1 and 200 MBit/s, aver-
+brute force a large amount of TXIDs in a short time, the net
+                                                                   age latencies of 70 ms (with outliers up to 200 ms), and
+effect is advantageous because with a high likelihood it also
+                                                                   intermittent episodes of packet loss of up to 20%. Although
+prevents the authentic name server from placing the correct
+                                                                   these conditions were far from ideal, we could implement
+record in the client’s cache.
+                                                                   the DEMONS attack in this setting with a significant success
+   5. Rinse and Repeat: To obtain more guesses, the attacker       rate.
+only needs to repeat the poisoning phase by sending another           We adapted DEMONS to these network conditions as fol-
+burst of spoofed DNS responses and triggering another DNS          lows: To compensate for the overall latency, we inserted a
+query shortly after. Once the TXID of one of the spoofed           65 ms delay between the attack start signal sent to the Poison-
+responses matches the ID used in the victim’s DNS query,           ers and the first XMLHttpRequest triggered by the malicious
+the attacker observes the incoming XMLHttpRequest on the           JavaScript. The latency jitter and packet loss were mostly
+malicious server and can end the poisoning phase.                  compensated by distributing the poisoner across three differ-
+
+
+
+7046    32nd USENIX Security Symposium                                                                                          USENIX Association
+ent servers. In addition, we increased the burst size from 105              T480s ran the attacker’s web server, poisoner, and a script to
+to 850 spoofed DNS responses per poisoner (for a total of                   monitor and log the experiment results. To simulate realistic
+2550 DNS responses per burst). Longer bursts improve the                    network conditions we used traffic control to set the latency to
+success rate at the cost of a large drop in attack performance.             1 ms and limit the attacker’s bandwidth to a maximum of 20
+To counteract this performance loss we increased the number                 Mbit/s. Since the lab setup provides a much more consistent
+of XMLHttpRequests per burst from 1 to 24 (for a total of                   connection than the internet setup, we used only one poisoner
+120 DNS queries), with a 3 ms delay in-between.                             and a smaller burst size of 525 responses.
+
+Victim Setup. The victim machine is a Windows 10 VM
+running on a desktop computer2 in the home network of one
+                                                                            6.4    Results of Lab Evaluation
+of the authors. The victim host was connected to a home
+router via ethernet cable. The internet connection is an end-
+                                                                            Out of a total of 133 experiments in the lab setup the
+user DSL connection providing roughly 27 Mbit/s upstream
+                                                                            DEMONS attack succeeded 48 times (36%) and failed 85
+and 80 Mbit/s downstream. The Google resolver (8.8.8.8)
+                                                                            times (64%).
+was configured as the default DNS server in the client OS.
+                                                                               To compare DEMONS in the web attacker model with
+                                                                            a malware attacker as described in [3], we implemented a
+Stealthiness. During the attack, we observed an average
+                                                                            collaborative, unprivileged malware attacker in Python. The
+network traffic of roughly 3-4 MBit/s on the victim machine.
+                                                                            setup phase of the malware simply allocates all UDP sockets
+The internet connection of our victim was utilized normally
+                                                                            in the system, except one, and leaks the remaining port to the
+during the attack and did not show any reduction in service
+                                                                            attacker over the network (see Table 1). We used this setup
+quality during typical home office tasks, browsing, telephony,
+                                                                            phase in situ as a replacement for the victim browser in the
+and video streaming. A victim is unlikely to notice a running
+                                                                            DEMONS lab evaluation, keeping the network configuration
+DEMONS attack unless the network traffic is actively moni-
+                                                                            and all other aspects of the attacker the same. Out of a total of
+tored for suspicious activity. During the poisoning phase the
+                                                                            125 experiments in the lab setup the malware attack succeeded
+CPU load stayed well below 20%, and only during the setup
+                                                                            71 times (57%) and failed 54 times (43%).
+phase, which took 15 s, did CPU utilization spike up to 100%
+due to the overhead caused by creating WebRTC objects.
+
+6.2     Results of Internet Evaluation                                      6.5    Discussion
+Table 3 summarizes the results for both DEMONS experi-                      Comparing DEMONS and the malware attacker, we see that
+ments. Over a course of 24 hours, we ran the DEMONS                         the minimum attack duration is smaller for the malware at-
+experiment a total of 351 times. We recorded 131 (37%)                      tacker due to the faster setup phase. The DEMONS setup
+successful DNS cache poisonings. The experiment failed                      phase has more overhead caused by the relatively slow cre-
+219 (62%) times because the authentic DNS server managed                    ation of WebRTC objects in the browser. Despite the faster
+to respond to a DNS query before it was invalidated by the                  setup phase, the mean and maximum attack duration is longer
+Poisoner. The experiment was aborted one time because it                    for the malware attacker compared to DEMONS because the
+did not produce a result before the limit of 2000 bursts was                malware attacker can sustain the poisoning phase for longer
+reached.                                                                    periods. This results in both higher total run times and a
+                                                                            higher overall success rate for the malware attacker.
+6.3     Setup of Lab Evaluation                                                Overall, the DEMONS attacker has a 21% lower success
+                                                                            rate than the malware attacker. We suspect that this is partly
+For our lab setup, we used three Dell Optiplex 9603 desktop
+                                                                            because of the jitter in the timing of the DNS queries triggered
+computers connected via a GBit-Ethernet-Switch4 . The first
+                                                                            from JavaScript, compared to the malware attacker written
+computer took the role of the victim, running Google Chrome
+                                                                            in Python, and partly due to the additional DNS and other
+on a stock installation of Windows 105 . The second system
+                                                                            activity in the system from running the browser itself.
+acted as benign DNS Server. The third system was configured
+as a router simulating infrastructure between the victim’s and                 We note that in our experimental setup, we count a poi-
+the attacker’s ISP and the benign DNS server. A Thinkpad                    soning attempt as a failure when the benign DNS response
+                                                                            is accepted by the victim once. In contrast, the evaluation
+2 Oracle Virtual Box 6 VM with 4 cores, 8 GiB RAM on Intel Core i7 3770k,   of [3] is based on a DNS entry with a time-to-live (TTL) of
+  32 GiB RAM host.
+3 Intel Core2Quad Q9400, 4 GiB RAM, Intel 82567LM-3 Gigabit NIC             30 s and an attacker who retries the attack after that time, lead-
+4 D-Link DGS-108 Gigabit ethernet switch                                    ing to almost perfect success rates overall. We make no such
+5 Chrome 83.0.4103.106 on Windows 10 (1909 Build 18363.815)                 assumption about the TTL used by the benign DNS response.
+
+
+
+USENIX Association                                                                            32nd USENIX Security Symposium            7047
+7     Mitigations                                                        attacker must open at least 7 tabs to trigger a browser crash,
+                                                                         and at least 10 tabs to render the OS unusable (Table 2).
+7.1      Mitigating the Fork Bomb                                           We implemented the described modification in Chromium
+                                                                         101.0.4951.647 . The resulting patch is available as part of our
+The Google Chrome Team did not consider the fork bomb
+                                                                         artifacts1 and was submitted to the Chromium and Firefox
+attack to be a security vulnerability and did not implement any
+                                                                         developers.
+countermeasures. This leaves all browsers based on Chrome
+                                                                            For an additional False Positive evaluation, we sorted the
+susceptible to Site Isolation-based attacks like the fork bomb.
+                                                                         Tranco Top 1000 according to the number of processes created
+In this section, we give some suggestions on how Site Isola-
+                                                                         for each website. Opening the top 50 web pages from the
+tion can be improved to prevent the fork bomb attack.
+                                                                         reordered list in 50 tabs lead to 171 processes running in the
+                                                                         OS, which was well below the threshold for DoS attacks we
+Applying OS Resource Limits. On Linux, cgroups can be                    identified in Table 2.
+used to limit the available resources for single applications               To verify that the changes introduced by our patch do not
+– e.g. web browsers – in the OS (other systems offer similar             measurably impact the browser’s performance we recorded
+functionality). So by e.g. limiting the number of processes              the page load times of the Tranco Top 5 websites using the
+available to Site Isolation-enabled browsers, we can prevent             profiling tools integrated into Chromium. We found no sig-
+a DoS attack on the OS. At the same time, however, DoS                   nificant difference in performance.
+attacks on the browser itself will become easier – the limit                We also verified the effectiveness of our patch by opening
+assigned by cgroups can be exhausted by multiple tabs, or by             the Tranco Top 50 pages together with our Site Isolation-
+a single tab as in the Site Isolation-based fork bomb attack.            fork-bomb attack page in Chromium Site Isolation-patched.
+                                                                         The attack page was interrupted after creating 30 sites and
+Browser Process Consolidation for IP Addresses. In Site                  both Chromium Site Isolation-patched and the OS (Kubuntu
+Isolation, process consolidation [40, section 4.1.1] is used to          18.04 LTS) stayed stable. Repeating the experiment with an
+reduce the overall number of processes: If two tabs include              unpatched Chrome led to an OS freeze. In contrast to our
+the same site in two different iframes, only one process is              malicious attacker website, none of the benign websites trig-
+launched for this site. A browser could apply process consoli-           gered the Site Isolation-process-limit dialog. This indicates
+dation also to IPv6 address blocks, such that all IP addresses           that our patch is unlikely to impact user experience with false
+from one block count as a single origin. However, if these               positive warnings.
+blocks are too big, they can be used to circumvent Site Isola-
+tion – if an attacker manages to rent a single IP address in the
+same address block as an IP address used to access a target              7.3     Mitigating UDP Port Exhaustion
+website, they may get access to the target website’s process             Google Chrome. The Google Chrome Team considered
+in the victim browser.                                                   DEMONS to be a security vulnerability. As DEMONS is a
+                                                                         complex attack, it is easy to mitigate by removing any of its
+7.2      Our Solution: Limit Processes by Visible                        preconditions for success. In the case of Chrome, the devel-
+         Windows and Tabs                                                opers implemented a configurable global limit of 6000 UDP
+                                                                         sockets across the whole browser instance. We re-evaluated
+We implemented and evaluated the following countermeasure                Chrome with this countermeasure and confirmed that this
+to the fork bomb attack in the browser: Each window/tab is               limit is now effectively enforced (see Table 2 in the appendix
+assigned a limit L of processes. Each time the user opens                for detailed results). This aligns the behavior of Chromium-
+a new window/tab wi , the browser initializes a local limit              based browsers with that of Firefox, which already has a
+Li := L and tracks the use of resources for wi in a variable             global limit of 1000 ports. We note that for both browsers the
+Ci . As long as Ci ≤ Li , page loading proceeds normally. If             global limit is high enough to reduce the number of available
+the maximum number Li of processes is reached, the browser               ephemeral ports for DNS queries significantly, reducing the
+interrupts page processing with an alert message, offering the           effectiveness of source port randomization as a countermea-
+user to increase Li by some fixed value ∆L . Our solution                sure to the Kaminsky attack.
+does not require special OS interfaces.
+    We evaluated the Tranco6 [27] Top 1000 web pages and
+measured the number of processes created for each of these               Redesigning Network Sockets in the OS. The root cause
+pages. We found that the maximum number of processes                     behind DNS Cache Poisoning attacks using UDP port ex-
+created by a single page from this set was 19. Including                 haustion is that the pool of ephemeral ports must be shared
+some additional headroom, we set L = 30. With this limit, an             among all IP addresses. However, in calculations regarding
+                                                                         the effectiveness of source port randomization, it is commonly
+6   We use the Tranco list generated on 29 March 2022 (https://tranco-
+    list.eu/list/254Y9)                                                  7   commit 7f19001c12cf2eee0b7ddd213a40c1652086c9da
+
+
+
+
+7048      32nd USENIX Security Symposium                                                                          USENIX Association
+assumed that for each destination IP address the full range       that, drive-by-downloads could be used to install malware on
+of available ephemeral UDP source ports would be avail-           the local OS [8, 42]. Other attacks target the victim’s machine
+able [24, 35, 45]. This mismatch between abstract network         hardware itself [15–17, 31, 38, 44, 46].
+sockets and actual OS sockets created through the Berkeley           The concept of a fork bomb is comprehensively described
+socket API creates an attack surface where unrelated subsys-      by Berlot and Sang [5]. Fork bombs can be difficult to detect
+tems using UDP can interfere with each other. Unfortunately,      and mitigate. Nakagawa and Oikawa [37] suggest a quaran-
+changing the socket API would require a complete redesign         tine procedure to reduce harm to honest processes in case of
+of the network stack and its use in applications.                 False Positives detection, but in practice, the best strategy is to
+                                                                  limit and control the number of processes by careful applica-
+                                                                  tion design, in particular in the case of sandbox environments
+7.4    Mitigating DNS Cache Poisoning Attacks                     running untrusted code [40].
+DNS-over-HTTPS (DoH). DEMONS DNS Cache Poison-                       The idea to allocate most of the UDP socket table to dis-
+ing can be mitigated by using DoH but only for those web          able port randomization and thus re-enable past DNS Cache
+applications running in a browser that uses DoH. Browsers         Poisoning attacks [24] was first described by Alharbi et al. [3],
+with DoH can still be used as attack vectors to block UDP         who carefully analyzed the performance of the attack on Win-
+ports of the OS using the techniques described in this paper.     dows, Linux, and macOS under realistic network latencies.
+Thus, source port randomization can still be disabled for ap-     The actual port exhaustion in their attack is achieved using
+plications relying on classical DNS. However, for a complete      a collaborative, unprivileged malware. Although [3] conjec-
+attack setup, the attacker now must control two applications:     ture that the browser can be used instead of malware, to our
+One for blocking UDP ports and releasing a single port (e.g.,     knowledge no such port exhaustion in the web attacker model
+the browser), and one for sending a DNS request that shall be     was known prior to Site Isolation and our work.
+poisoned. A bigger obstacle is the limited support for DoH.          Other recent DNS Cache Poisoning attacks on various net-
+Currently, only Mozilla supports DoH in the default config-       work devices have also bypassed UDP port randomization.
+uration, and only in certain countries. None of our tested        Shulman and Waidner [45] use IP fragmentation to inject
+browsers used DoH in its default configuration. Moreover, a       spoofed DNS responses. Man et al. [35] build a side-channel
+downgrade attack from DoH to classical DNS-over-UDP has           from a complex combination of ICMP error messages on
+been discovered recently [22].                                    UDP open port queries and ICMP limits, to detect open UDP
+                                                                  ports at resolvers, which are then used in spoofed DNS re-
+                                                                  sponses. Zheng et al. [50] use oversized DNS resources at an
+Other Solutions. As a straightforward approach to mitigate        attacker-controlled DNS server to enforce splitting of the DNS
+DNS Cache Poisoning, the size of the DNS TXID could               response into two UDP packets, where only the first packet
+be extended, rendering source port randomization irrelevant.      contains the random TXID, and the second UDP packet is
+However, no standardization activities in this direction are      spoofed by the attacker who only has to guess the correct
+known. This may be due to the now 24-year struggle to deploy      UDP port. As a limitation, the attacker must be in the same
+DNSSEC [1, 4]. DNSSEC would solve the problem, yet a              (W)LAN as the victim.
+complete mitigation can only be achieved if all domains use
+DNSSEC, or if an application can determine which domains
+are secured and which are not. Additionally, OS resolvers         9    Conclusion and Future Work
+would have to verify the DNSSEC signature chain.
+                                                                  Site Isolation is an important security architecture to protect
+                                                                  against side channel and renderer exploits. Our work aims at
+8     Related Work                                                improving Site Isolation, not at diminishing it.
+                                                                     While the sophisticated DEMONS attack could be suc-
+Site Isolation was developed by Google for the Chrome web         cessfully mitigated by introducing a global limit on the web
+browser, and is described by Reis, Moshchuk, and Oskov            browser’s UDP ports, the fork bomb attack is still a threat.
+in [40]. Before, process isolation has been used to isolate       It may be surprising to some that even very old attacks such
+different windows at the OS level to protect against remote       as fork bombs and other resource exhaustion attacks are still
+code execution vulnerabilities in the renderer of the browser.    effective against current operating systems, and that browsers
+As shown in [23, 43], the misalignment between web origin         are fulfilling an important role in protecting users against such
+and browser boundaries could be exploited by a web attacker       threats. In fact, for years now browsers have provided a safe
+to target the local OS. The urgency for Site Isolation was        and reliable environment for users to run untrusted, even ma-
+increased by the publication of the Spectre [26] and Melt-        licious code, arguably a safer and more reliable environment
+down [32] side-channel attacks.                                   than the operating system itself.
+   Just-in-time (JIT) compilation of JavaScript provided many        In this context, the flaws we found in Site Isolation are an
+examples of attacks on local processes [14, 29, 30, 34]. Before   unfortunate regression. We note with some concern that as
+
+
+
+USENIX Association                                                                   32nd USENIX Security Symposium           7049
+browsers are evolving to meet the ever-increasing demands of            Journal: A Global Perspective, vol. 17, no. 1,
+web application developers, more and more resources of the              pp. 33–44, mar 2008. [Online]. Available: https:
+OS will be available more or less directly to web attackers.            //doi.org/10.1080%2F19393550801929547
+This includes network sockets as well as hardware resources
+such as arbitrary USB devices. We hope that our work high-          [6] C. C. Center, “Vulnerability Note VU#800113:
+lights the emergent risks of this trend.                                Multiple DNS implementations vulnerable to
+                                                                        cache poisoning,” 2008. [Online]. Available:
+                                                                        https://www.kb.cert.org/vuls/id/800113
+Future Work. Our findings were limited to common web
+browsers but could be extended to other browsers, browser           [7] M. Cotton, L. Eggert, J. Touch, M. Westerlund, and
+extensions, and native applications built with an embedded              S. Cheshire, “Internet Assigned Numbers Authority
+browser framework, such as Electron.8 Another class of tar-             (IANA) Procedures for the Management of the
+gets could be headless browsers running on servers for web              Service Name and Transport Protocol Port Number
+crawlers or to create preview images of links for messenger             Registry,” RFC 6335 (Best Current Practice), Internet
+apps. We did not evaluate all possible browser features for             Engineering Task Force, Aug. 2011. [Online].
+Site Isolation based resource exhaustion. In particular, UDP            Available: http://www.ietf.org/rfc/rfc6335.txt
+socket allocation may be possible using the QUIC protocol.
+Also, exhaustion of graphic card resources through WebGL            [8] M. Cova, C. Kruegel, and G. Vigna, “Detection and
+and other rendering APIs could be considered.                           analysis of drive-by-download attacks and malicious
+                                                                        javascript code,” in Proceedings of the 19th interna-
+                                                                        tional conference on World wide web, 2010, pp. 281–
+Acknowledgments                                                         290.
+Funded by the Deutsche Forschungsgemeinschaft (DFG, Ger-            [9] M. Crispin, “INTERNET MESSAGE ACCESS PRO-
+man Research Foundation) under Germany’s Excellence Strat-              TOCOL - VERSION 4rev1,” RFC 3501 (Proposed
+egy - EXC 2092 CASA - 390781972.                                        Standard), Internet Engineering Task Force, Mar.
+                                                                        2003, updated by RFCs 4466, 4469, 4551, 5032,
+References                                                              5182, 5738, 6186, 6858. [Online]. Available:
+                                                                        http://www.ietf.org/rfc/rfc3501.txt
+    [1] D. E. 3rd and C. Kaufman, “Domain Name
+                                                                   [10] J. Dickinson, S. Dickinson, R. Bellis, A. Mankin, and
+        System Security Extensions,” RFC 2065 (Proposed
+                                                                        D. Wessels, “Dns transport over tcp - implementation
+        Standard), Internet Engineering Task Force, Jan.
+                                                                        requirements,” Internet Requests for Comments, RFC
+        1997, obsoleted by RFC 2535. [Online]. Available:
+                                                                        Editor, RFC 7766, March 2016.
+        http://www.ietf.org/rfc/rfc2065.txt
+                                                                   [11] P. Dubroy and R. Balakrishnan, “A study of
+    [2] D. Akhawe, A. Barth, P. E. Lam, J. C. Mitchell, and
+                                                                        tabbed browsing among mozilla firefox users,” in
+        D. Song, “Towards a formal foundation of web security,”
+                                                                        Proceedings of the SIGCHI Conference on Human
+        in CSF 2010: IEEE 23st Computer Security Foundations
+                                                                        Factors in Computing Systems, ser. CHI ’10.
+        Symposium, A. Myers and M. Backes, Eds. IEEE
+                                                                        New York, NY, USA: Association for Computing
+        Computer Society Press, 2010, pp. 290–304.
+                                                                        Machinery, 2010, p. 673–682. [Online]. Available:
+    [3] F. Alharbi, J. Chang, Y. Zhou, F. Qian, Z. Qian, and            https://doi.org/10.1145/1753326.1753426
+        N. Abu-Ghazaleh, “Collaborative Client-Side DNS
+                                                                   [12] M. Foundation, “Mozilla firefox - projekt fission,”
+        Cache Poisoning Attack,” in IEEE INFOCOM 2019 -
+                                                                        2020. [Online]. Available: https://wiki.mozilla.org/
+        IEEE Conference on Computer Communications, 2019,
+                                                                        Project_Fission
+        pp. 1153–1161.
+                                                                   [13] ——, “Firefox 94.0, see all new features, updates
+    [4] R. Arends, R. Austein, M. Larson, D. Massey, and
+                                                                        and fixes,” 2021. [Online]. Available: https://
+        S. Rose, “DNS Security Introduction and Requirements,”
+                                                                        www.mozilla.org/en-US/firefox/94.0/releasenotes/
+        RFC 4033 (Proposed Standard), Internet Engineering
+        Task Force, Mar. 2005, updated by RFCs 6014, 6840.         [14] R. Gawlik and T. Holz, “Sok: Make jit-spray
+        [Online]. Available: http://www.ietf.org/rfc/rfc4033.txt        great again,” in 12th USENIX Workshop on
+                                                                        Offensive Technologies (WOOT 18). Baltimore,
+    [5] M. Berlot and J. Sang, “Dealing with process
+                                                                        MD: USENIX Association, Aug. 2018. [Online].
+        overload attacks in unix,” Information Security
+                                                                        Available: https://www.usenix.org/conference/woot18/
+8   https://www.electronjs.org/                                         presentation/gawlik
+
+
+
+7050      32nd USENIX Security Symposium                                                                 USENIX Association
+[15] D. Genkin, L. Pachmanov, E. Tromer, and Y. Yarom,            [24] D. Kaminsky, “Black ops 2008: It’s the end of the cache
+     “Drive-by key-extraction cache attacks from portable              as we know it,” Black Hat USA, vol. 2, 2008.
+     code,” in Applied Cryptography and Network Security,
+                                                                  [25] J. Klensin, “Simple Mail Transfer Protocol,” RFC 5321
+     B. Preneel and F. Vercauteren, Eds. Cham: Springer
+                                                                       (Draft Standard), Internet Engineering Task Force, Oct.
+     International Publishing, 2018, pp. 83–102.
+                                                                       2008, updated by RFC 7504. [Online]. Available:
+[16] D. Gruss, D. Bidner, and S. Mangard, “Practical memory            http://www.ietf.org/rfc/rfc5321.txt
+     deduplication attacks in sandboxed javascript,” in Com-      [26] P. Kocher, J. Horn, A. Fogh, , D. Genkin, D. Gruss,
+     puter Security – ESORICS 2015, G. Pernul, P. Y A Ryan,            W. Haas, M. Hamburg, M. Lipp, S. Mangard,
+     and E. Weippl, Eds. Cham: Springer International Pub-             T. Prescher, M. Schwarz, and Y. Yarom, “Spectre At-
+     lishing, 2015, pp. 108–122.                                       tacks: Exploiting Speculative Execution,” in 40th IEEE
+                                                                       Symposium on Security and Privacy (S&P’19), 2019.
+[17] D. Gruss, C. Maurice, and S. Mangard, “Rowhammer.js:
+     A remote software-induced fault attack in javascript,” in    [27] V. Le Pochat, T. Van Goethem, S. Tajalizadehkhoob,
+     Proceedings of the 13th International Conference on               M. Korczyński, and W. Joosen, “Tranco: A research-
+     Detection of Intrusions and Malware, and Vulnerability            oriented top sites ranking hardened against manipula-
+     Assessment - Volume 9721, ser. DIMVA 2016.                        tion,” in Proceedings of the 26th Annual Network and
+     Berlin, Heidelberg: Springer-Verlag, 2016, p. 300–321.            Distributed System Security Symposium, ser. NDSS
+     [Online]. Available: https://doi.org/10.1007/978-3-319-           2019, Feb. 2019.
+     40667-1_15
+                                                                  [28] J. Leitschuh, “Want to take over the Java ecosystem?
+[18] M. Handley, V. Jacobson, and C. Perkins, “SDP:                    All you need is a MITM!” 2019. [Online]. Available:
+     Session Description Protocol,” RFC 4566 (Proposed                 https://medium.com/bugbountywriteup/want-to-take-
+     Standard), Internet Engineering Task Force, Jul. 2006.            over-the-java-ecosystem-all-you-need-is-a-mitm-
+     [Online]. Available: http://www.ietf.org/rfc/rfc4566.txt          1fc329d898fb
+                                                                  [29] W. Lian, H. Shacham, and S. Savage, “Too lejit to quit:
+[19] I. Hickson et al. (2019) WebRTC 1.0: Real-
+                                                                       Extending jit spraying to arm.” in NDSS. Citeseer,
+     time Communication Between Browsers. W3C
+                                                                       2015.
+     and Google Inc. and Apple Computer Inc. and
+     Mozilla Foundation and Opera Software ASA. [On-              [30] ——, “A call to arms: Understanding the costs and
+     line]. Available: https://www.w3.org/TR/webrtc/#dom-              benefits of jit spraying mitigations.” in NDSS, 2017.
+     peerconnection-localdescription
+                                                                  [31] M. Lipp, D. Gruss, M. Schwarz, D. Bidner, C. Maurice,
+[20] P. Hoffman and P. McManus, “DNS Queries over                      and S. Mangard, “Practical keystroke timing attacks in
+     HTTPS (DoH),” Internet Requests for Comments, RFC                 sandboxed javascript,” in Computer Security – ESORICS
+     Editor, RFC 8484, October 2018.                                   2017, S. N. Foley, D. Gollmann, and E. Snekkenes, Eds.
+                                                                       Cham: Springer International Publishing, 2017, pp. 191–
+[21] C. Holmberg, H. Alvestrand, and C. Jennings,                      209.
+     “Negotiating Media Multiplexing Using the Ses-
+                                                                  [32] M. Lipp, M. Schwarz, D. Gruss, T. Prescher, W. Haas,
+     sion Description Protocol (SDP),” Working Draft,
+                                                                       A. Fogh, J. Horn, S. Mangard, P. Kocher, D. Genkin,
+     IETF Secretariat, Internet-Draft draft-ietf-mmusic-
+                                                                       Y. Yarom, and M. Hamburg, “Meltdown: Reading Ker-
+     sdp-bundle-negotiation-54, December 2018. [Online].
+                                                                       nel Memory from User Space,” in 27th USENIX Security
+     Available: http://www.ietf.org/internet-drafts/draft-ietf-
+                                                                       Symposium (USENIX Security 18), 2018.
+     mmusic-sdp-bundle-negotiation-54.txt
+                                                                  [33] M. J. Luckie, R. Beverly, R. Koga, K. Keys, J. A. Kroll,
+[22] Q. Huang, D. Chang, and Z. Li, “A comprehensive                   and k claffy, “Network hygiene, incentives, and reg-
+     study of DNS-over-HTTPS downgrade attack,” in 10th                ulation: Deployment of source address validation in
+     USENIX Workshop on Free and Open Communications                   the internet,” in ACM CCS 2019: 26th Conference on
+     on the Internet (FOCI 20), 2020.                                  Computer and Communications Security, L. Cavallaro,
+                                                                       J. Kinder, X. Wang, and J. Katz, Eds. ACM Press, Nov.
+[23] Y. Jia, Z. L. Chua, H. Hu, S. Chen, P. Saxena, and
+                                                                       2019, pp. 465–480.
+     Z. Liang, “"The Web/Local" Boundary Is Fuzzy: A
+     Security Study of Chrome’s Process-based Sandboxing,”        [34] G. Maisuradze, M. Backes, and C. Rossow, “Dachshund:
+     in Proceedings of the 2016 ACM SIGSAC Conference                  digging for and securing against (non-) blinded con-
+     on Computer and Communications Security, 2016, pp.                stants in jit code,” in Symposium on Network and Dis-
+     791–804.                                                          tributed System Security (NDSS), 2017.
+
+
+
+USENIX Association                                                                 32nd USENIX Security Symposium        7051
+[35] K. Man, Z. Qian, Z. Wang, X. Zheng, Y. Huang,                     the modern era: New data-only attacks and defenses,”
+     and H. Duan, “Dns cache poisoning attack reloaded:                in 2017 IEEE European Symposium on Security and
+     Revolutions with side channels,” in Proceedings of                Privacy (EuroS P), 2017, pp. 366–381.
+     the 2020 ACM SIGSAC Conference on Computer and
+     Communications Security, ser. CCS ’20. New York,             [44] S. Röttger and A. Janc, “A spectre proof-of-
+     NY, USA: Association for Computing Machinery,                     concept for a spectre-proof web,” 2021. [Online].
+     2020, p. 1337–1350. [Online]. Available: https:                   Available: https://security.googleblog.com/2021/03/a-
+     //doi.org/10.1145/3372297.3417280                                 spectre-proof-of-concept-for-spectre.html
+
+[36] D. Mills, J. Martin, J. Burbank, and W. Kasch, “Network      [45] H. Shulman and M. Waidner, “Fragmentation consid-
+     Time Protocol Version 4: Protocol and Algorithms                  ered leaking: Port inference for dns poisoning,” in Ap-
+     Specification,” RFC 5905 (Proposed Standard), Internet            plied Cryptography and Network Security, I. Boureanu,
+     Engineering Task Force, Jun. 2010. [Online]. Available:           P. Owesarski, and S. Vaudenay, Eds. Cham: Springer
+     http://www.ietf.org/rfc/rfc5905.txt                               International Publishing, 2014, pp. 531–548.
+
+[37] G. Nakagawa and S. Oikawa, “Fork bomb attack miti-           [46] A. Shusterman, A. Agarwal, S. O’Connell, D. Genkin,
+     gation by process resource quarantine,” in 2016 Fourth            Y. Oren, and Y. Yarom, “Prime+probe 1, javascript 0:
+     International Symposium on Computing and Network-                 Overcoming browser-based side-channel defenses,” in
+     ing (CANDAR). IEEE, nov 2016. [Online]. Available:                30th USENIX Security Symposium (USENIX Security
+     https://doi.org/10.1109%2Fcandar.2016.0124                        21). USENIX Association, Aug. 2021, pp. 2863–
+                                                                       2880. [Online]. Available: https://www.usenix.org/
+[38] Y. Oren, V. P. Kemerlis, S. Sethumadhavan, and                    conference/usenixsecurity21/presentation/shusterman
+     A. D. Keromytis, “The spy in the sandbox: Practical
+     cache attacks in javascript and their implications,” in      [47] R. Siemborski and A. Menon-Sen, “The Post
+     Proceedings of the 22nd ACM SIGSAC Conference                     Office Protocol (POP3) Simple Authentication and
+     on Computer and Communications Security, ser. CCS                 Security Layer (SASL) Authentication Mechanism,”
+     ’15. New York, NY, USA: Association for Computing                 RFC 5034 (Proposed Standard), Internet Engineering
+     Machinery, 2015, p. 1406–1418. [Online]. Available:               Task Force, Jul. 2007. [Online]. Available: http:
+     https://doi.org/10.1145/2810103.2813708                           //www.ietf.org/rfc/rfc5034.txt
+
+[39] J. Postel and J. Reynolds, “File Transfer Protocol,” RFC     [48] P. Vixie and D. Dagon, “Use of bit 0x20 in dns labels to
+     959 (INTERNET STANDARD), Internet Engineering                     improve transaction identity,” Working Draft, IETF Sec-
+     Task Force, Oct. 1985, updated by RFCs 2228,                      retariat, Internet-Draft draft-vixie-dnsext-dns0x20-00,
+     2640, 2773, 3659, 5797, 7151. [Online]. Available:                March 2008. [Online]. Available: https://www.ietf.org/
+     http://www.ietf.org/rfc/rfc959.txt                                archive/id/draft-vixie-dnsext-dns0x20-00.txt
+
+[40] C. Reis, A. Moshchuk, and N. Oskov, “Site Iso-               [49] W. Xu, S. Park, and T. Kim, “Freedom: Engineering
+     lation: Process Separation for Web Sites within                   a state-of-the-art dom fuzzer,” in Proceedings of the
+     the Browser,” in 28th USENIX Security Symposium                   2020 ACM SIGSAC Conference on Computer and
+     (USENIX Security 19). Santa Clara, CA: USENIX                     Communications Security, ser. CCS ’20. New York,
+     Association, Aug. 2019, pp. 1661–1678. [On-                       NY, USA: Association for Computing Machinery,
+     line]. Available: https://www.usenix.org/conference/              2020, p. 971–986. [Online]. Available: https:
+     usenixsecurity19/presentation/reis                                //doi.org/10.1145/3372297.3423340
+
+[41] E. Rescorla, “Security considerations for webrtc,”           [50] X. Zheng, C. Lu, J. Peng, Q. Yang, D. Zhou, B. Liu,
+     Working Draft, IETF Secretariat, Internet-Draft                   K. Man, S. Hao, H. Duan, and Z. Qian, “Poison Over
+     draft-ietf-rtcweb-security-12, July 2019. [Online].               Troubled Forwarders: A Cache Poisoning Attack Target-
+     Available: http://www.ietf.org/internet-drafts/draft-ietf-        ing DNS Forwarding Devices,” in 29th USENIX Security
+     rtcweb-security-12.txt                                            Symposium (USENIX Security 20), 2020.
+
+[42] K. Rieck, T. Krueger, and A. Dewald, “Cujo: efficient
+     detection and prevention of drive-by-download attacks,”
+     in Proceedings of the 26th Annual Computer Security
+     Applications Conference, 2010, pp. 31–39.
+
+[43] R. Rogowski, M. Morton, F. Li, F. Monrose, K. Z. Snow,
+     and M. Polychronakis, “Revisiting browser security in
+
+
+
+7052   32nd USENIX Security Symposium                                                                    USENIX Association
+A     DEMONS Implementation Details                                    A.2     Modifying the SDP
+                                                                       Adding multiple copies of the same data channel with dif-
+A.1    Tracking the port numbers used by Web-                          ferent unique identifiers (mid in Figure 8) allows for the
+       RTC Objects                                                     reservation of multiple UDP ports with a single RTCPeer-
+                                                                       Connection. This significantly reduces the CPU overhead
+The      RTCPeerConnection         (RTCPC),         which is           compared to using multiple RTCPeerConnections with only a
+part of the JavaScript WebRTC API, has an                              single data channel. We achieve this by using SDP munging,
+onconnectionstatechange property.               Any custom             where the SDP offer is manipulated outside of the WebRTC
+event handler function assigned to this property is called upon        implementation (see Figure 9).
+state change of the RTCPC. Furthermore, the RTCPC has a
+localDescription property that describes the session for                1    v=0
+connections local endpoint [19]. Among other information                2    o=- 6271792437987180154 2 IN IP4 127.0.0.1
+this session description contains the port number proposed              3    s=-
+                                                                        4    t=0 0
+during the connection negotiation. The malicious JavaScript             5    a=group:BUNDLE 0
+attaches the custom event handler shown in Figure 6 to                  6    m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+every RTCPC it establishes. Once the event fires for any                7    c=IN IP4 0.0.0.0
+connection the handler passes the local session description             8    a=mid:0
+                                                                        9   +m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+to the getPort function shown in Figure 7. The function                10   +c=IN IP4 0.0.0.0
+getPort extracts the UDP port from the string representation           11   +a=mid:1
+of the session description associated with the connection              12   +m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+that triggered the event. At the end of the Setup Phase the            13   +c=IN IP4 0.0.0.0
+                                                                       14   +a=mid:2
+malicious JavaScript closes one of the established RTCPCs              15    ...
+and sends the port stored for this connection to the Poisoner
+using a WebSocket.
+                                                                    Figure 8: SDP offer manipulation (excerpt). The attacker
+                                                                    inserts a copy of lines 6–8 once per extra media channel to be
+    function onConnectionStateChange(ev, cnContainer,             1
+          ,→ cnIndex, cnType, eventHandler) {                       allocated, consuming two more UDP ports each time.
+      // store local description ports                            2
+      if(cnType == "LCON") {                                      3
+        // Get handler for the n-th RTCPC                         4
+                                                                            function mungeChannels(offer, mungeChannelCount, offs      1
+        cn = cnContainer.connections.local[cnIndex];              5
+                                                                                 ,→ ) {
+        // Extract and store local port for the n-                6
+                                                                              const midx = offer.sdp.indexOf("m=");                    2
+              ,→ th
+                                                                              const mdef = offer.sdp.substr(midx);                     3
+        // RTCPC                                                  7
+                                                                              let sdp = offer.sdp;                                     4
+        cnContainer.ports.local[cnIndex] = getPort(cn);           8
+                                                                              for(let i=0; i < mungeChannelCount; i++) {               5
+        if(eventHandler != null) {                                9
+                                                                                sdp += mdef.replace(/mid:\d+/, "mid:" + (              6
+           eventHandler(cn, cnContainer.ports.local[cnIndex       10
+                                                                                  10 + mungeChannelCount * offs + i));                 7
+                ,→ ]);
+                                                                              }                                                        8
+        }                                                         11
+                                                                              offer.sdp = sdp;                                         9
+      }                                                           12
+                                                                              return offer;                                            10
+      // store remote description ports                           13
+                                                                            }                                                          11
+      ...                                                         14
+    }                                                             15
+
+                                                                             Figure 9: SDP offer manipulation program code.
+ Figure 6: Intercepting WebRTC connection state changes
+
+
+
+    function getPort(rtcpc) {                                     1
+       sdp = rtcpc.localDescription.sdp.split("\n");              2
+       cand = sdp.filter(i => i.startsWith("a=candidate"))        3
+            ,→ ;
+       return cand[0].split(/\s+/)[5];                            4
+    }                                                             5
+
+
+Figure 7: Retrieving the UDP port from a session description
+
+
+
+
+USENIX Association                                                                      32nd USENIX Security Symposium          7053
+B           Evaluation Results of the DEMONS Mitigations deployed in Chrome/Chromium and Edge
+
+                                     Browser             Chrome1 /Chromium2                                 Edge3                                    Firefox4
+  OS                                     Sites    Single-Site         Multi-Site           Single-Site           Multi-Site         Single-Site            Multi-Site
+                                Site Isolation         -          off            on             -            off           on            -               off        on
+                           Processes                  8             6           311F           9             7         306F             10             7           215
+
+  Windows
+                                  WebRTC[p]        1000/500      1000/500     5996/2998      1000/500      1000/500   5996/2998          0/999         0/998         0/999
+
+            Sockets
+                       UDP v4/v6 WebRTC[u]         1000/500      1000/500     5996/2998      1000/500      1000/500   5996/2998          0/998         0/999         1/999
+                                  WebRTC[m]       3001/1500     3001/1500     5997/2996     3001/1500      3000/500   5996/2997            -             -             -
+                           Processes                  11            9           460F             -            -            -            6                6           224
+                                  WebRTC[p]
+  Linux
+                                                   1000/500      1000/500     6000/3000          -            -            -        1000/998          999/998       999/998
+
+            Sockets
+                       UDP v4/v6 WebRTC[u]         1000/500      1000/500     6000/3000          -            -            -         999/998          999/998       999/998
+                                  WebRTC[m]       3000/1500     3001/1500     6000/2999          -            -            -            -                -             -
+[p] WebRTC objects with a single data channel.           [u] WebRTC objects with multiple data channels.     [m] WebRTC objects with munging.
+1 Chrome v89.0.4389.114 on Windows 10; 2 Chromium v89.0.4389.90 on Kubuntu Linux 18.04 LTS;
+3 Edge (Chromium based) v89.0.774.75; 4 Firefox Nightly 89.0a1 2021-04-11 experimental Site Isolation enabled
+ Browser Crash; F Operating system unusable
+
+Note: Chrome/Chromium allocate one UDP port in each WebRTC channel in dual-stack mode, causing an extra allocation in IPv6. Firefox allocates all UDP ports
+IPv6 only, but in Linux, they are mapped to IPv4 by the OS. Therefore entries like 1000/500 refer to the number of IPv4/IPv6 ports blocked, resp.
+
+
+Table 4: Re-evaluation of Resource Exhaustion Attacks based on Site Isolation with DEMONS mitigations deployed in
+Chrome/Chromium and Edge.
+
+
+
+C           Site Isolation-Based Fork Bomb Details
+
+                                                                                                                                          ±1                    q2
+                                                          Observed behavior
+                                                                                                                                    ¹3         º4      ¹5       º4      Î6
+                The Browser became unresponsive to user interactions.                                                                •           •      •       •
+                The browser window closed without notification.                                                                                         •       •        •
+                The browser showed a crash report dialog.                                                                                        •              •
+                Moving the browser window caused artifacts, the desktop was not redrawn properly.                                                •
+               The browser window became transparent and could not be dragged, shortly after clicking the window the browser
+                                                                                                                                                        •
+                automatically closed and restarted without notification.
+                The screen turned black for a short time, then the browser crashed with a dialog titled „chrome.exe – Application
+                Error“, message text: „The application was“. After closing the message another error message with the same title
+                                                                                                                                                        •
+                appeared, message text: „The exception unknown software exception (0xe0000008) occurred in the application
+                at location 0x00007FFC8111A799.“
+                The browser became unresponsive. The OS displayed a dialog titled „WerFault.exe – Application Error“, message
+                text: „The application was unable to start correctly (0xc000012d). Click OK to close the application. After                             •
+                confirming the dialog by pressing the "OK" button the browser window remained open and unresponsive.
+                The screen turned black for a short time, then the browser crashed with a dialog titled „msedge.exe – Application
+                Error“, message text: „The exception unknown software exception (0xe0000008) occurred in the application at
+                                                                                                                                                                         •
+                location 0x00007FF9E242A799.“. After confirming the dialog a white unresponsive browser window stayed
+                open.
+                The browser crashed with a dialog titled „firefox.exe – Application Error“, message text: „The excep-
+                tion Breakpoint A breakpoint has been reached. (0x80000003) occurred in the application at location                                             •
+                0x00007FF9DB4C0955. Click on OK to terminate the program“.
+                The OS froze.                                                                                                        •           •              •
+ F              The screen turned black.                                                                                                                •                •
+                The screen was no longer redrawn properly.                                                                                              •                •
+OS versions: 1 Kubuntu Linux 18.04.5 LTS (Kernel 5.4.0-62), 2 Windows 10 (1909 Build 18363.815)
+Browser versions: 3 Chromium 83.0.4103.0, 4 Firefox Nightly 86.01a, 5 Chrome 83.0.4103.106, 6 Edge 83.0.478.45
+Hardware configuration: Dell Latitude 5280, Intel Core i5 7200U, 8 GiB RAM, 240 GiB M.2 SATA
+
+Table 5: During our evaluation of the fork bomb we observed effects that affected browsers and operating systems. This table
+provides a detailed description of behavior we classified as "browser crash ()" and "OS unusable (F)".
+
+
+
+7054                  32nd USENIX Security Symposium                                                                                             USENIX Association
+

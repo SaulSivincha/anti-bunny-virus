@@ -1,0 +1,995 @@
+                                            USENIX Association
+
+
+
+
+                       Proceedings of the
+                12th USENIX Security Symposium
+                                          Washington, D.C., USA
+                                            August 4–8, 2003
+
+
+
+
+                                                     THE ADVANCED COMPUTING SYSTEMS ASSOCIATION
+
+
+
+
+© 2003 by The USENIX Association                All Rights Reserved             For more information about the USENIX Association:
+Phone: 1 510 528 8649            FAX: 1 510 548 5738              Email: office@usenix.org              WWW: http://www.usenix.org
+                                Rights to individual papers remain with the author or the author's employer.
+                  Permission is granted for noncommercial reproduction of the work for educational or research purposes.
+              This copyright notice must be included in the reproduced paper. USENIX acknowledges all trademarks herein.
+                          Storage-based Intrusion Detection:
+                    Watching storage activity for suspicious behavior
+                          Adam G. Pennington, John D. Strunk, John Linwood Grifﬁn,
+                           Craig A.N. Soules, Garth R. Goodson, Gregory R. Ganger
+                                         Carnegie Mellon University
+
+  Abstract                                                         OS, meaning that it cannot be disabled by an intruder who
+                                                                   only successfully gets past a host’s OS-level protection.
+  Storage-based intrusion detection allows storage systems
+  to watch for data modiﬁcations characteristic of system in-      This paper motivates and describes storage-based intrusion
+  trusions. This enables storage systems to spot several com-      detection. It presents several kinds of suspicious behav-
+  mon intruder actions, such as adding backdoors, inserting        ior that can be spotted by a storage IDS. Using sixteen
+  Trojan horses, and tampering with audit logs. Further, an        “rootkits” and two worms as examples, we describe how
+  intrusion detection system (IDS) embedded in a storage           ﬁfteen of them would be exposed rapidly by our storage
+  device continues to operate even after client systems are        IDS. (The other three do not modify stored ﬁles.) Most
+  compromised. This paper describes a number of speciﬁc            of them are exposed by modifying system binaries, adding
+  warning signs visible at the storage interface. Examination      ﬁles to system directories, scrubbing the audit log, or using
+  of 18 real intrusion tools reveals that most (15) can be de-     suspicious ﬁle names. Of the ﬁfteen detected, three mod-
+  tected based on their changes to stored ﬁles. We describe        ify the kernel to hide their presence from host-based detec-
+  and evaluate a prototype storage IDS, embedded in an NFS         tion including FS integrity checkers like Tripwire [18]. In
+  server, to demonstrate both feasibility and efﬁciency of         general, compromises cannot hide their changes from the
+  storage-based intrusion detection. In particular, both the       storage device if they wish to persist across reboots; to be
+  performance overhead and memory required (152 KB for             re-installed upon reboot, the tools must manipulate stored
+  4730 rules) are minimal.                                         ﬁles.
+                                                                   A storage IDS could be embedded in many kinds of storage
+                                                                   systems. The extra processing power and memory space
+  1 Introduction                                                   required should be feasible for ﬁle servers, disk array con-
+                                                                   trollers, and perhaps augmented disk drives. Most detec-
+  Many intrusion detection systems (IDSs) have been devel-         tion rules will also require FS-level understanding of the
+  oped over the years [1, 23, 29], with most falling into one      stored data. Such understanding exists trivially for a ﬁle
+  of two categories: network-based or host-based. Network          server, and may be explicitly provided to block-based stor-
+  IDSs (NIDS) are usually embedded in sniffers or ﬁrewalls,        age devices. This understanding of a ﬁle system is anal-
+  scanning trafﬁc to, from, and within a network environ-          ogous to the understanding of application protocols used
+  ment for attack signatures and suspicious trafﬁc [5, 25].        by a NIDS [27], but with fewer varieties and structural
+  Host-based IDSs (HIDS) are fully or partially embedded           changes over time.
+  within each host’s OS. They examine local information
+                                                                   As a concrete example with which to experiment, we have
+  (such as system calls [10]) for signs of intrusion or suspi-
+                                                                   augmented an NFS server with a storage IDS that sup-
+  cious behavior. Many environments employ multiple IDSs,
+                                                                   ports online, rule-based detection of suspicious modiﬁca-
+  each watching activity from its own vantage point.
+                                                                   tions. This storage IDS supports the detection of four cat-
+  The storage system is another interesting vantage point for      egories of suspicious activities. First, it can detect unex-
+  intrusion detection. Several common intruder actions [7,         pected changes to important system ﬁles and binaries, us-
+  p. 218][34, pp. 363–365] are quite visible at the storage        ing a rule-set very similar to Tripwire’s. Second, it can de-
+  interface. Examples include manipulating system utilities        tect patterns of changes like non-append modiﬁcation (e.g.,
+  (e.g., to add backdoors or Trojan horses), tampering with        of system log ﬁles) and reversing of inode times. Third, it
+  audit log contents (e.g., to eliminate evidence), and reset-     can detect speciﬁcally proscribed content changes to crit-
+  ting attributes (e.g., to hide changes). By design, a stor-      ical ﬁles (e.g., illegal shells inserted into /etc/passwd).
+  age server sees all changes to persistent data, allowing it to   Fourth, it can detect the appearance of speciﬁc ﬁle names
+  transparently watch for suspicious changes and issue alerts      (e.g., hidden “dot” ﬁles) or content (e.g., known viruses
+  about the corresponding client systems. Also, like a NIDS,       or attack tools). An administrative interface supplies the
+  a storage IDS must be compromise-independent of the host
+
+
+
+
+USENIX Association                            12th USENIX Security Symposium                                                   137
+  detection rules, which are checked during the processing
+  of each NFS request. When a detection rule triggers, the
+  server sends the administrator an alert containing the full
+  pathname of the modiﬁed ﬁle, the violated rule, and the                                 Local                              Wide
+  offending NFS operation. Experiments show that the run-                                 Area                               Area
+                                                                                          Network                            Network
+  time cost of such intrusion detection is minimal. Further
+                                                                                                              Firewall
+  analysis indicates that little memory capacity is needed for                                               and NIDS
+  reasonable rulesets (e.g., only 152 KB for an example con-
+  taining 4730 rules).
+  The remainder of this paper is organized as follows. Sec-
+  tion 2 introduces storage-based intrusion detection. Sec-                   Operating System
+  tion 3 evaluates the potential of storage-based intrusion                         File         RPC or
+                                                                                                 Device             Storage Storage
+  detection by examining real intrusion tools. Section 4 dis-                      System
+                                                                                                 Driver             Requests   +
+                                                                                                                              IDS
+  cusses storage IDS design issues. Section 5 describes a
+                                                                              HIDS
+  prototype storage IDS embedded in an NFS server. Sec-
+  tion 6 uses this prototype to evaluate the costs of storage-                                                                      Configuration
+                                                                                                                                    and Alerts
+  based intrusion detection. Section 7 presents related work.                   Storage interconnect or
+                                                                         network link physically restricts
+  Section 8 summarizes this paper’s contributions and dis-                     client access to storage
+
+  cusses continuing work.
+                                                                                                                          Admin Console
+
+
+  2 Storage-based Intrusion Detection
+                                                                  Figure 1: The compromise independence of a storage IDS. The stor-
+  Storage-based intrusion detection enables storage devices       age interface provides a physical boundary behind which a storage server
+  to examine the requests they service for suspicious client      can observe the requests it is asked to service. Note that this same picture
+                                                                  works for block protocols, such as SCSI or IDE/ATA, and distributed ﬁle
+  behavior. Although the world view that a storage server         system protocols, such as NFS or CIFS. Also note that storage IDSs do
+  sees is incomplete, two features combine to make it a well-     not replace existing IDSs, but simply offer an additional vantage point
+  positioned platform for enhancing intrusion detection ef-       from which to detect intrusions.
+  forts. First, since storage devices are independent of host
+  OSes, they can continue to look for intrusions after the ini-
+                                                                  intrusion detection with conventional schemes becomes
+  tial compromise, whereas a host-based IDS can be disabled
+                                                                  much more difﬁcult. Host-based IDSs can be rendered in-
+  by the intruder. Second, since most computer systems rely
+                                                                  effective by intruder software that disables them or feeds
+  heavily on persistent storage for their operation, many in-
+                                                                  them misinformation, for which many tools exist. Network
+  truder actions will cause storage activity that can be cap-
+                                                                  IDSs can continue to look for suspicious behavior, but are
+  tured and analyzed. This section expands on these two fea-
+                                                                  much less likely to ﬁnd an already successful intruder—
+  tures and identiﬁes limitations of storage-based intrusion
+                                                                  most NIDSs look for attacks and intrusion attempts rather
+  detection.
+                                                                  than for system usage by an existing intruder [11]. A stor-
+                                                                  age IDS can help by offering a vantage point on a system
+  2.1 Threat model and assumptions                                component that is often manipulated in suspicious ways
+                                                                  after the intruder compromises the system.
+  Storage IDSs focus on the threat on of an attacker who has      A key characteristic of the described threat model is that
+  compromised a host system in a managed computing en-            the attacker has software control over the host, but does not
+  vironment. By “compromised,” we mean that the attacker          have physical access to its hardware. We are not speciﬁ-
+  subverted the host’s software system, gaining the ability to    cally trying to address insider attacks, in which the intruder
+  run arbitrary software on the host with OS-level privileges.    would also have physical access to the hardware and its
+  The compromise might have been achieved via technical           storage components. Also, for the storage IDS to be ef-
+  means (e.g., exploiting buggy software or a loose policy) or    fective, we assume that neither the storage device nor the
+  non-technical means (e.g., social engineering or bribery).      admin console are compromised.
+  Once the compromise occurs, most administrators wish to
+  detect the intrusion as quickly as possible and terminate it.
+  Intruders, on the other hand, often wish to hide their pres-    2.2 Compromise independence
+  ence and retain access to the machine.                          A storage IDS will continue watching for suspicious activ-
+  Unfortunately, once an intruder compromises a machine,          ity even when clients’ OSes are compromised. It capital-
+
+
+
+138                                           12th USENIX Security Symposium                                               USENIX Association
+   izes on the fact that storage devices (whether ﬁle servers,     tors expect to remain unchanged except during explicit up-
+   disk array controllers, or even IDE disks) run different        grades. Examples of such ﬁles include system executables
+   software on separate hardware, as illustrated in Figure 1.      and scripts, conﬁguration ﬁles, and system header ﬁles and
+   This fact enables server-embedded security functional-          libraries. Given the importance of such ﬁles and the infre-
+   ity that cannot be disabled by any software running on          quency of updates to them, any modiﬁcation is a potential
+   client systems (including the OS kernel). Further, stor-        sign of intrusion. A storage IDS can detect all such modiﬁ-
+   age devices often have fewer network interfaces (e.g.,          cations on-the-ﬂy, before the storage device processes each
+   RPC+SNMP+HTTP or just SCSI) and no local users.                 request, and issue an alert immediately.
+   Thus, compromising a storage server should be more dif-         In current systems, modiﬁcation detection is sometimes
+   ﬁcult than compromising a client system. Of course, such        provided by a checksumming utility (e.g., Tripwire [18])
+   servers have a limited view of system activity, so they can-    that periodically compares the current storage state against
+   not distinguish legitimate users from clever impostors. But,    a reference database stored elsewhere. Storage-based in-
+   from behind the physical storage interface, a storage IDS       trusion detection improves on this current approach in
+   can spot many common intruder actions and alert adminis-        three ways: (1) it allows immediate detection of changes
+   trators.                                                        to watched ﬁles; (2) it can notice short-term changes, made
+   Administrators must be able to communicate with the             and then undone, which would not be noticed by a check-
+   storage IDS, both to conﬁgure it and to receive alerts.         summing utility if the changes occurred between two pe-
+   This administrative channel must also be compromise-            riodic checks; and (3) for local storage, it avoids trusting
+   independent of client systems, meaning that no user (in-        the host OS to perform the checks, which many rootkits
+   cluding root) and no software (including the OS kernel)         disable or bypass.
+   on a client system can have administrative privileges for
+   the storage IDS. Section 4 discusses deployment options         2.3.2 Update patterns
+   for the administrative console, including physical consoles
+   and cryptographic channels from a dedicated administra-         A second category of warning signs consists of suspi-
+   tive system.                                                    cious access patterns, particularly updates. There are sev-
+                                                                   eral concrete examples for which storage IDSs can be use-
+   All of the warning signs discussed in this paper could also     ful in watching. The clearest is client system audit logs;
+   be spotted from within a HIDS, but host-based IDSs do not       these audit logs are critical to both intrusion detection [6]
+   enjoy the compromise independence of storage IDSs. A            and diagnosis [35], leading many intruders to scrub evi-
+   host-based IDS is vulnerable to being disabled or bypassed      dence from them as a precaution. Any such manipulation
+   by intruders that compromise the OS kernel. Another in-         will be obvious to a storage IDS that understands the well-
+   teresting place for a storage IDS is the virtual disk module    deﬁned update pattern of the speciﬁc audit log. For in-
+   of a virtual machine monitor [39]; such deployment would        stance, audit log ﬁles are usually append-only, and they
+   enjoy compromise independence from the OSes running in          may be periodically “rotated.” This rotation consists of
+   its virtual machines [4].                                       renaming the current log ﬁle to an alternate name (e.g.,
+                                                                   logfile to logfile.0) and creating a new “current” log
+   2.3 Warning signs for storage IDSs                              ﬁle. Any deviation in the update pattern of the current log
+                                                                   ﬁle or any modiﬁcation of a previous log ﬁle is suspicious.
+   Successful intruders often modify stored data. For in-
+   stance, they may overwrite system utilities to hide their       Another suspicious update pattern is timestamp reversal.
+   presence, install Trojan horse daemons to allow for re-         Speciﬁcally, the data modiﬁcation and attribute change
+   entry, add users, modify startup scripts to reinstall kernel    times commonly kept for each ﬁle can be quite useful
+   modiﬁcations upon reboot, remove evidence from the audit        for post-intrusion diagnosis of which ﬁles were manipu-
+   log, or store illicit materials. These modiﬁcations are visi-   lated [9]. By manipulating the times stored in inodes (e.g.,
+   ble to the storage system when they are made persistent.        setting them back to their original values), an intruder can
+   This section describes four categories of warning signs         inhibit such diagnosis. Of course, care must be taken with
+   that a storage IDS can monitor: data and attribute modi-        IDS rules, since some programs (e.g., tar) legitimately set
+   ﬁcations, update patterns, content integrity, and suspicious    these times to old values. One possibility would be to only
+   content.                                                        set off an alert when the modiﬁcation time is set back long
+                                                                   after a ﬁle’s creation. This would exclude tar-style activ-
+                                                                   ity but would catch an intruder trying to obfuscate a mod-
+   2.3.1 Data/attribute modification
+                                                                   iﬁed ﬁle. Of course, the intruder could now delete the ﬁle,
+   In managed computing environments, the simplest (and            create a new one, set the date back, and hide from the stor-
+   perhaps most effective) category of warning signs con-          age IDS—a more complex rule could catch this, but such
+   sists of data or meta-data changes to ﬁles that administra-     escalation is the nature of intrusion detection.
+
+
+
+USENIX Association                           12th USENIX Security Symposium                                                  139
+      Detection of storage denial-of-service (DoS) attacks also       are likely to be few critical ﬁles for which content integrity
+      falls into the category of suspicious access patterns. For      veriﬁcation is utilized.
+      example, an attacker can disable speciﬁc services or en-        As a concrete example, consider a UNIX system pass-
+      tire systems by allocating all or most of the free space. A     word ﬁle (/etc/passwd), which consists of a set of well-
+      similar effect can be achieved by allocating inodes or other    deﬁned records. Records are delimited by a line-break, and
+      metadata structures. A storage IDS can watch for such ex-       each record consists of seven colon-separated ﬁelds. Fur-
+      haustion, which may be deliberate, accidental, or coinci-       ther, each of the ﬁelds has a speciﬁc meaning, some of
+      dental (e.g., a user just downloaded 10 GB of multime-          which are expected to conform to rules of practice. For
+      dia ﬁles). When the system reaches predetermined thresh-        example, the seventh ﬁeld speciﬁes the “shell” program to
+      olds of unallocated resources and allocation rate, warn-        be launched when a user logs in, and (in Linux) the ﬁle
+      ing the administrator is appropriate even in non-intrusion      /etc/shells lists the legal options. During the “Capture
+      situations—attention is likely to be necessary soon. A stor-    the Flag” information warfare game at the 2002 DEF CON
+      age IDS could similarly warn the administrator when stor-       conference [21], one tactic used was to change the root
+      age activity exceeds a threshold for too long, which may        shell on compromised systems to /sbin/halt; once a tar-
+      be a DoS attack or just an indication that the server needs     geted system’s administrator noted the intrusion and at-
+      to be upgraded.                                                 tempted to become root on the machine (the common ini-
+      Although speciﬁc rules can spot expected intruder actions,      tial reaction), considerable down-time and administrative
+      more general rules may allow larger classes of suspicious       effort was needed to restore the system to operation. A
+      activity to be noticed. For example, some attribute mod-        storage IDS can monitor changes to /etc/passwd and
+      iﬁcations, like enabling “set UID” bits or reducing the         verify that they conform to a set of basic integrity rules: 7-
+      permissions needed for access, may indicate foul play.          ﬁeld records, non-empty password ﬁeld, legal default shell,
+      Additionally, many applications access storage in a reg-        legal home directory, non-overlapping user IDs, etc. The
+      ular manner. As two examples: word processors often use         attack described above, among others, could be caught im-
+      temporary and backup ﬁles in speciﬁc ways, and UNIX             mediately.
+      password management involves a pair of inter-related ﬁles
+      (/etc/passwd and /etc/shadow). The corresponding                2.3.4 Suspicious content
+      access patterns seen at the storage device will be a reﬂec-
+      tion of the application’s requests. This presents an oppor-     A fourth category of warning signs is the appearance of
+      tunity for anomaly detection based on how a given ﬁle is        suspicious content. The most obvious suspicious content
+      normally accessed. This could be done in a manner similar       is a known virus or rootkit, detectable via its signature.
+      to learning common patterns of system calls [10] or start-      Several high-end storage servers (e.g., from EMC [24] and
+      ing with rules regarding the expected behavior of individ-      Network Appliance [28]) now include support for internal
+      ual applications [19]. Deviation from the expected pattern      virus scanning. By executing the scans within the storage
+      could indicate an intruder attempting to subvert the normal     server, viruses cannot disable the scanners even after in-
+      method of accessing a given ﬁle. Of course, the downside        fecting clients.
+      is an increase (likely substantial) in the number of false      Two other examples of suspicious content are large num-
+      alarms. Our focus to date has been on explicit detection        bers of “hidden” ﬁles or empty ﬁles. Hidden ﬁles have
+      rules, but anomaly detection within storage access patterns     names that are not displayed by normal directory listing
+      is an interesting topic for future research.                    interfaces [7, p. 217], and their use may indicate that an
+                                                                      intruder is using the system as a storage repository, per-
+      2.3.3 Content integrity                                         haps for illicit or pirated content. A large number of empty
+                                                                      ﬁles or directories may indicate an attempt to exploit a race
+      A third category of warning signs consists of changes that      condition [2, 30] by inducing a time-consuming directory
+      violate internal consistency rules of speciﬁc ﬁles. This cat-   listing, search, or removal.
+      egory builds on the previous examples by understanding
+      the application-speciﬁc semantics of particularly important
+      stored data. Of course, to verify content integrity, the de-    2.4 Limitations, costs, and weaknesses
+      vice must understand the format of a ﬁle. Further, while
+      simple formats may be veriﬁed in the context of the write       Although storage-based intrusion detection contributes to
+      operation, ﬁle formats may be arbitrarily complex and veri-     security efforts, of course it is not a silver bullet.
+      ﬁcation may require access to additional data blocks (other     Like any IDS, a storage IDS will produce some false posi-
+      than those currently being written). This creates a perfor-     tives. With very speciﬁc rules, such as “watch these 100
+      mance vs. security trade-off made by deciding which ﬁles        ﬁles for any modiﬁcation,” false positives should be in-
+      to verify and how often to verify them. In practice, there      frequent; they will occur only when there are legitimate
+
+
+
+140                                             12th USENIX Security Symposium                                USENIX Association
+   changes to a watched ﬁle, which should be easily veriﬁed         websites, most of them from Packet Storm [26].
+   if updates involve a careful procedure. The issue of false       Most of the actions taken by these tools fall into two cat-
+   alarms grows progressively more problematic as the rules         egories. Actions in the ﬁrst category involve hiding evi-
+   get less exact (e.g., the time reversal or resource exhaus-      dence of the intrusion and the rootkit’s activity. The second
+   tion examples). The far end of the spectrum from speciﬁc         provides a mechanism for reentry into a system. Twelve of
+   rules is general anomaly detection.                              the tools operate by running various binaries on the host
+   Also like any IDS, a storage IDS will fail to spot some in-      system and overwriting existing binaries to continue gain-
+   trusions. Fundamentally, a storage IDS cannot notice intru-      ing control. The other six insert code into the operating
+   sions whose actions do not cause odd storage behavior. For       system kernel.
+   example, three of the eighteen intrusion tools examined in       For the analysis in this section, we focus on a subset
+   the next section modify the OS but change no ﬁles. Also,         of the rules supported by our prototype storage-based
+   an intruder may manipulate storage in unwatched ways.            IDS described in Section 5. Speciﬁcally, we include
+   Using network-based and host-based IDSs together with a          the ﬁle/directory modiﬁcation (Tripwire-like) rules, the
+   storage IDS can increase the odds of spotting various forms      append-only logﬁle rule, and the hidden ﬁlename rules. We
+   of intrusion.                                                    do not consider any “suspicious content” rules, which may
+   Intrusion detection, as an aspect of information warfare,        or may not catch a rootkit depending on whether its partic-
+   is by nature a “game” of escalation. As soon as one side         ular signature is known.1 In these eighteen toolkits, we did
+   takes away an avenue of attack, the other starts looking         not ﬁnd any instances of resource exhaustion attacks or of
+   for the next. Since storage-based intrusion detection eas-       reverting inode times.
+   ily sees several common intruder activities, crafty intruders
+   will change tactics. For example, an intruder can make any
+   number of changes to the host’s memory, so long as those         3.1 Detection results
+   modiﬁcations do not propagate to storage. A reboot, how-         Of the eighteen toolkits tested, storage IDS rules would
+   ever, will reset the system and remove the intrusion, which      immediately detect ﬁfteen based on their storage modiﬁ-
+   argues for proactive restart [3, 16, 43]. To counter this, at-   cations. Most would trigger numerous alerts, highlighting
+   tackers must have their changes re-established automati-         their presence. The other three make no changes to per-
+   cally after a reboot, such as by manipulating the various        sistent storage. However, they are removed if the system
+   boot-time (e.g., rc.local in UNIX-like systems) or peri-         reboots; all three modify the kernel, but would have to be
+   odic (e.g., cron in UNIX-like systems) programs. Doing           combined with system ﬁle changes to be re-inserted upon
+   so exposes them to the storage IDS, creating a traditional       reboot.
+   intrusion detection game of cat and mouse.
+                                                                    Non-append changes to the system audit log. Seven of
+   As a practical consideration, storage IDSs embedded              the eighteen toolkits scrub evidence of system compro-
+   within individual components of decentralized storage sys-       mise from the audit log. All of them do so by selectively
+   tems are unlikely to be effective. For example, a disk array     overwriting entries related to their intrusion into the sys-
+   controller is a ﬁne place for storage-based intrusion detec-     tem, rather than by truncating the logﬁle entirely. All cause
+   tion, but individual disks behind software striping are not.     alerts to be generated in our prototype.
+   Each of the disks has only part of the ﬁle system’s state,
+   making it difﬁcult to check non-trivial rules without adding     System file modification. Fifteen of the eighteen toolkits
+   new inter-device communication paths.                            modify a number of watched system ﬁles (ranging from
+                                                                    1 to 20). Each such modiﬁcation generates an alert. Al-
+   Finally, storage-based intrusion detection is not free.          though three of the rootkits replace the ﬁles with bina-
+   Checking rules comes with some cost in processing and            ries that match the size and CRC checksum of the previ-
+   memory resources, and more rules require more resources.         ous ﬁles, they do not foil cryptographically-strong hashes.
+   In conﬁguring a storage IDS, one must balance detection          Thus, Tripwire-like systems would be able to catch them
+   efforts with performance costs for the particular operating      as well, though the evasion mechanism described in Sec-
+   environment.                                                     tion 3.2 defeats Tripwire.
+                                                                    Many of the ﬁles modiﬁed are common utilities for sys-
+   3 Case Studies                                                   tem administration, found in /bin, /sbin, and /usr/bin
+                                                                    on a UNIX machine. They are modiﬁed to hide the pres-
+   This section explores how well a storage IDS might fare          ence and activity of the intruder. Common changes include
+   in the face of actual compromises. To do so, we examined             1 An interesting note is that rootkit developers reuse code: four of the
+   eighteen intrusion tools (Table 1) designed to be run on         rootkits use the same audit log scrubbing program (sauber), and another
+   compromised systems. All were downloaded from public             three use a different program (zap2).
+
+
+
+
+USENIX Association                           12th USENIX Security Symposium                                                                 141
+        Name                          Description                                         Syscall       Log        Hidden Watched                Total
+                                                                                          redir.       scrub        dirs     files               alerts
+        Ramen                         Linux worm                                                                     X           2                    3
+        1ion                          Linux worm                                                                               10                   10
+        FK 0.4                        Linux LKM rootkit and trojan ssh                       X                                   1                    1
+        Taskigt                       Linux LKM rootkit                                                                          1                    1
+        SK 1.3a                       Linux kernel rootkit via /dev/kmem                     X                                                        -
+        Darkside 0.2.3                FreeBSD LKM rootkit                                    X                                                        -
+        Knark 0.59                    Linux LKM rootkit                                      X                        X                  1            2
+        Adore                         Linux LKM rootkit                                      X                                                        -
+        lrk5                          User level rootkit from source                                      X           X                 20          22
+        Sun rootkit                   SunOS rootkit with trojan rlogin                                                                   1            1
+        FreeBSD Rootkit 2             User level FreeBSD rootkit                                          X           X                 15          17
+        t0rn                          Linux user level rootkit                                            X           X                 20          22
+        Advanced Rootkit              Linux user level rootkit                                                        X                 10          11
+        ASMD                          Rootkit w/SUID binary trojan                                                    X                  1            2
+        Dica                          Linux user level rootkit                                            X           X                  9          11
+        Flea                          Linux user level rootkit                                            X           X                 20          22
+        Ohara                         Rootkit w/PAM trojan                                                X           X                  4            6
+        TK 6.66                       Linux user level rootkit                                            X           X                 10          12
+
+      Table 1: Visible actions of several intruder toolkits. For each of the tools, the table shows which of the following actions are performed: redirecting
+      system calls, scrubbing the system log ﬁles, and creating hidden directories. It also shows how many of the ﬁles watched by our rule set are modiﬁed
+      by a given tool. The ﬁnal column shows the total number of alerts generated by a given tool.
+
+
+      modifying ps to not show an intruder’s processes, ls to not                  ﬁle modiﬁcations described above. Especially interesting
+      show an intruder’s ﬁles, and netstat to not show an in-                      for this analysis is the use of exec() redirection by four
+      truder’s open network ports and connections. Similar mod-                    of the kernel rootkits. With such redirection, the exec()
+      iﬁcations are often made to grep, find, du, and pstree.                      system call uses a replacement version of a targeted pro-
+      The other common reason for modifying system binaries                        gram, while other system calls return information about
+      is to create backdoors for system reentry. Most commonly,                    or data from the original. As a result, any tool relying on
+      the target is telnetd or sshd, although one rootkit added                    the accuracy of system calls to check ﬁle integrity, such as
+      a backdoored PAM module [33] as well. Methods for using                      Tripwire, will be fooled.
+      the backdoor vary and do not impact our analysis.                            All of these rootkits are detected using our storage IDS
+      Hidden file or directory names. Twelve of the rootkits                       rules—they all put their replacement programs in the orig-
+      make a hard-coded effort to hide their non-executable and                    inals’ directories (which are watched), and four of the six
+      working ﬁles (i.e., the ﬁles that are not replacing existing                 actually move the original ﬁle to a new name and store
+      ﬁles). Ten of the kits use directories starting in a ‘.’ to hide             their replacement ﬁle with the original name (which also
+      from default ls listings. Three of these generate alerts by                  triggers an alert). However, future rootkits could be mod-
+      trying to make a hidden directory look like the reserved ‘.’                 iﬁed to be less obvious to a storage IDS. Speciﬁcally, the
+      or ‘..’ directories by appending one or more spaces (‘. ’ or                 original ﬁles could be left untouched and replacement ﬁles
+      ‘.. ’). This also makes the path harder to type if a system                  could be stored someplace not watched by the storage IDS,
+      administrator does not know the number of spaces.                            such as a random user directory—neither would gener-
+                                                                                   ate an alert. With this approach, ﬁle modiﬁcation can be
+                                                                                   completely hidden from a storage IDS unless the rootkit
+      3.2 Kernel-inserted evasion techniques                                       wants to reinstall the kernel modiﬁcation after a reboot.
+                                                                                   To accomplish this, some original ﬁles would need to be
+      Six of the eighteen toolkits modiﬁed the running operating                   changed, which forces intruders to make an interesting
+      system kernel. Five of these six “kernel rootkits” include                   choice: hide from the storage IDS or persist beyond the
+      loadable kernel modules (LKMs), and the other inserts it-                    next reboot.
+      self directly into kernel memory by use of the /dev/kmem
+      interface. Most of the kernel modiﬁcations allow intrud-
+      ers to hide as well as reenter the system, similarly to the
+
+
+
+142                                                      12th USENIX Security Symposium                                            USENIX Association
+   3.3 Anecdotal experience                                           uring an IDS to look for suspicious content. Rules can be
+                                                                      speciﬁed as signatures that are compared against ﬁles’ con-
+   During the writing of this paper, one of the authors hap-          tents. Similarly, ﬁlename expression grammars (like those
+   pened to be asked to analyze a system that had been                provided in scripting languages) could be used to describe
+   recently compromised. Several modiﬁcations similar to              suspicious ﬁlenames.
+   those made by the above rootkits were found on the sys-
+   tem. Root’s .bash profile was modiﬁed to run the zap2              Less guidance exists for the other two categories of warn-
+   log scrubber, so that as soon as root logged into the sys-         ing signs: update patterns and content integrity. We do not
+   tem to investigate the intrusion, the related logs would           currently know how to specify general rules for these cat-
+   be scrubbed. Several binaries were modiﬁed (ps, top,               egories. Our approach has been to fall back on Tripwire-
+   netstat, pstree, sshd, and telnetd). The binaries                  style rules; we hard-code checking functions (e.g., for non-
+   were setup to hide the existence of an IRC bot, running            append update or a particular content integrity violation)
+   out of the directory ‘/dev/.. /’. This experience helps            and then allow an administrator to specify on which ﬁles
+   validate our choice of “rootkits” for study, as they appear to     they should be checked (or that they should be checked for
+   be representative of at least one real-world intrusion. This       every ﬁle). More general approaches to specifying detec-
+   intrusion would have triggered at least 8 storage IDS rules.       tion rules for these categories of warning signs are left for
+                                                                      future work.
+
+
+   4 Design of a Storage IDS                                          4.2 Secure administration
+   To be useful in practice, a storage IDS must simultane-            The security administrator must have a secure interface to
+   ously achieve several goals. It must support a useful set of       the storage IDS. This interface is needed for the admin-
+   detection rules, while also being easy for human admin-            istrator to conﬁgure detection rules and to receive alerts.
+   istrators to understand and conﬁgure. It must be efﬁcient,         The interface must prevent client systems from forging or
+   minimizing both added delay and added resource require-            blocking administrative requests, since this could allow a
+   ments; some user communities still accept security mea-            crafty intruder to sneak around the IDS by disarming it. At
+   sures only when they are “free.” Additionally, it should be        a minimum, it must be tamper-evident. Otherwise, intrud-
+   invisible to users at least until an intrusion detection rule is   ers could stop rule updates or prevent alerts from reaching
+   matched.                                                           the administrator. To maintain compromise independence,
+                                                                      it must be the case that obtaining “superuser” or even ker-
+   This section describes four aspects of storage IDS design:         nel privileges on a client system is insufﬁcient to gain ad-
+   specifying detection rules, administering a storage IDS se-        ministrative access to the storage device.
+   curely, checking detection rules, and responding to suspi-
+   cious activity.                                                    Two promising architectures exist for such administration:
+                                                                      one based on physical access and one based on cryptogra-
+                                                                      phy. For environments where the administrator has phys-
+   4.1 Specifying detection rules                                     ical access to the device, a local administration terminal
+                                                                      that allows the administrator to set detection rules and re-
+   Specifying rules for an IDS is a tedious, error prone activ-       ceive the corresponding alert messages satisﬁes the above
+   ity. The tools an administrator uses to write and manipu-          goals.
+   late those rules should be as simple and straightforward as
+   possible. Each of the four categories of suspicious activity       In environments where physical access to the device is
+   presented earlier will likely need a unique format for rule        not practical, cryptography can be used to secure com-
+   speciﬁcation.                                                      munications. In this scenario, the storage device acts as
+                                                                      an endpoint for a cryptographic channel to the adminis-
+   The rule format used by Tripwire seems to work well for            trative system. The device must maintain keys and per-
+   specifying rules concerned with data and attribute modiﬁ-          form the necessary cryptographic functions to detect mod-
+   cation. This format allows an administrator to specify the         iﬁed messages, lost messages, and blocked channels. Ar-
+   pathname of a ﬁle and a list of properties that should be          chitectures for such trust models in storage systems ex-
+   monitored for that ﬁle. The set of watchable properties are        ist [14]. This type of infrastructure is already common for
+   codiﬁed, and they include most ﬁle attributes. This rule           administration of other network-attached security compo-
+   language works well, because it allows the administrator           nents, such as ﬁrewalls or network intrusion detection sys-
+   to manipulate a well understood representation (pathnames          tems. For direct-attached storage devices, cryptographic
+   and ﬁles), and the list of attributes that can be watched is       channels can be used to tunnel administrative requests and
+   small and well-deﬁned.                                             alerts through the OS of the host system, as illustrated in
+   The methods used by virus scanners work well for conﬁg-            Figure 2. Such tunneling simply treats the host OS as an
+
+
+
+USENIX Association                             12th USENIX Security Symposium                                                   143
+                                                                                  4.4 Responding to rule violations
+            Operating System                  Storage
+                                              Requests                            Since a detected “intruder action” may actually be legiti-
+                            Device
+                  File                                                            mate user activity (i.e., a false alarm), our default response
+                 System
+                            Driver                             IDS
+                                                                                  is simply to send an alert to the administrative system or
+                                               Configuration                      the designated alert log ﬁle. The alert message should con-
+           Client                                  and                            tain such information as the ﬁle(s) involved, the time of the
+                                                  Alerts
+                                                                                  event, the action being performed, the action’s attributes
+              Cryptographic tunnel                                                (e.g., the data written into the ﬁle), and the client’s identity.
+              through the client OS                      Admin Console            Note that, if the rules are set properly, most false positives
+                                                                                  should be caused by legitimate updates (e.g., upgrades)
+                                                                                  from an administrator. With the right information in alerts,
+      Figure 2: Tunneling administrative commands through client sys-             an administrative system that also coordinates legitimate
+      tems. For storage devices attached directly to client systems, a crypto-    upgrades could correlate the generated alert (which can
+      graphic tunnel can allow the administrator to securely manage a storage     include the new content) with the in-progress upgrade; if
+      IDS. This tunnel uses the untrusted client OS to transport administrative
+      commands and alerts.                                                        this were done, it could prevent the false alarm from reach-
+                                                                                  ing the human administrator while simultaneously verify-
+                                                                                  ing that the upgrade went through to persistent storage cor-
+                                                                                  rectly.
+      untrusted network component.                                                There are more active responses that a storage IDS could
+      For small numbers of dedicated servers in a machine room,                   trigger upon detecting suspicious activity. When choosing
+      either approach is feasible. For large numbers of storage                   a response policy, of course, the administrator must weigh
+      devices or components operating in physically insecure en-                  the beneﬁts of an active response against the inconvenience
+      vironments, cryptography is the only viable solution.                       and potential damage caused by false alarms.
+                                                                                  One reasonable active response is to slow down the sus-
+                                                                                  pected intruder’s storage accesses. For example, a storage
+                                                                                  device could wait until the alert is acknowledged before
+                                                                                  completing the suspicious request. It could also artiﬁcially
+      4.3 Checking the detection rules                                            increase request latencies for a client or user that is sus-
+                                                                                  pected of foul play. Doing so would provide increased time
+      Checking detection rules can be non-trivial, because rules                  for a more thorough response, and, while it will cause some
+      generally apply to full pathnames rather than inodes. Addi-                 annoyance in false alarm situations, it is unlikely to cause
+      tional complications arise because rules can watch for ﬁles                 damage. The device could even deny a request entirely if it
+      that do not yet exist.                                                      violates one of the rules, although this response to a false
+      For simple operations that act on individual ﬁles (e.g.,                    alarm could cause damage and/or application failure. For
+      READ and WRITE ), rule veriﬁcation is localized. The de-
+                                                                                  some rules, like append-only audit logs, such access con-
+      vice need only check that the rules pertaining to that spe-                 trol may be desirable.
+      ciﬁc ﬁle are not violated (usually a simple ﬂag comparison,                 Liu, et al. proposed a more radical response to detected
+      sometimes a content check). For operations that affect the                  intrusions: isolating intruders, via versioning, at the ﬁle
+      ﬁle system’s namespace, veriﬁcation is more complicated.                    system level [22]. To do so, the ﬁle system forks the ver-
+      For example, a rename of a directory tree may impact a                      sion trees to sandbox suspicious users until the administra-
+      large number of individual ﬁles, any of which could have                    tor veriﬁes the legitimacy of their actions. Unfortunately,
+      IDS rules that must be checked. Renaming a directory re-                    such forking is likely to interfere with system operation,
+      quires examining all ﬁles and directories that are children                 unless the intrusion detection mechanism yields no false
+      of the one being renamed.                                                   alarms. Speciﬁcally, since suspected users modify differ-
+      In the case of rules pertaining to ﬁles that do not currently               ent versions of ﬁles from regular users, the system faces a
+      exist, this list of rules must be consulted when operations                 difﬁcult reintegration [20, 41] problem, should the updates
+      change the namespace. For example, the administrator may                    be judged legitimate. Still, it is interesting to consider em-
+      want to watch for the existence of a ﬁle named /a/b/c                       bedding this approach, together with a storage IDS, into
+      even if the directory named /a does not yet exist. However,                 storage systems for particularly sensitive environments.
+      a single ﬁle system operation (e.g., mv /z /a) could cause                  A less intrusive storage-embedded response is to start ver-
+      the watched ﬁle to suddenly exist, given the appropriate                    sioning all data and auditing all storage requests when an
+      structure for z’s directory tree.                                           intrusion is detected. Doing so provides the administra-
+
+
+
+144                                                      12th USENIX Security Symposium                                     USENIX Association
+   tor with signiﬁcant information for post-intrusion diagno-                                          Metadata
+   sis and recovery. Of course, some intrusion-related infor-                     • inode modiﬁcation time • data modiﬁcation time
+   mation will likely be lost unless the intrusion is detected                    • access time             • ﬁle permissions
+   immediately, which is why Strunk et al. [38] argue for al-                     • link count              • device number
+   ways doing these things (just in case). Still, IDS-triggered                   • ﬁle owner               • inode number
+   employment of this functionality may be a useful trade-off                     • ﬁle type                • ﬁle owner group
+   point.                                                                         • ﬁle size
+                                                                                                         Data
+                                                                                  • any modiﬁcation         • append only
+   5 Storage-based intrusion detection                                            • password structure
+     in an NFS server
+                                                                                Table 2: Attribute list. Rules can be established to watch these at-
+   To explore the concepts and feasibility of storage-based in-                 tributes in real-time on a ﬁle-by-ﬁle basis.
+   trusion detection, we implemented a storage IDS in an NFS
+   server. Unmodiﬁed client systems access the server using
+                                                                                enable any of three system-wide rules: one that matches on
+   the standard NFS version 2 protocol [40]2 , while storage-
+                                                                                any operation that rolls-back a ﬁle’s modiﬁcation time, one
+   based intrusion detection occurs transparently. This section
+                                                                                that matches on any operation that creates a “hidden” di-
+   describes how the prototype storage IDS handles detection
+                                                                                rectory (e.g., a directory name beginning with ‘.’ and hav-
+   rule speciﬁcation, the structures and algorithms for check-
+                                                                                ing spaces in it), and one that looks for known (currently
+   ing rules, and alert generation.
+                                                                                hard-coded) intrusion tools by their sizes and SHA-1 di-
+   The base NFS server is called S4, and its implementa-                        gests. Although the system currently checks the digests on
+   tion is described and evaluated elsewhere [38]. It inter-                    every ﬁle update, periodic scanning of the system would
+   nally performs ﬁle versioning and request auditing, using                    likely be more practical. These rules apply to all parts of
+   a log-structured ﬁle system [32], but these features are not                 the directory hierarchy and are speciﬁed as simply ON or
+   relevant here. For our purposes, it is a convenient NFS                      OFF.
+   ﬁle server with performance comparable to the Linux and
+                                                                                Rules are communicated to the server through the use of
+   FreeBSD NFS servers. Secure administration is performed
+                                                                                an administrative RPC. This RPC interface has two com-
+   via the server’s console, using the physical access control
+                                                                                mands (see Table 3). The setRule() RPC gives the IDS
+   approach.
+                                                                                two values: the path of the ﬁle to be watched, and a set of
+                                                                                ﬂags describing the speciﬁc rules for that ﬁle. Rules are re-
+   5.1 Specifying detection rules                                               moved through the same mechanism, specifying the path
+                                                                                and an empty rule set.
+   Our prototype storage IDS is capable of watching for a va-
+   riety of data and metadata changes to ﬁles. The administra-
+   tor speciﬁes a list of Tripwire-style rules to conﬁgure the                  5.2 Checking the detection rules
+   detection system. Each administrator-supplied rule is of
+   the form: {pathname, attribute-list}—designating which                       This subsection describes the core of the storage IDS. It
+   attributes to monitor for a particular ﬁle. The list of at-                  discusses how rules are stored and subsequently checked
+   tributes that can be watched is shown in Table 2. In ad-                     during operation.
+   dition to standard Tripwire rules, we have added two ad-
+   ditional functions that can be speciﬁed on a per-ﬁle ba-                     5.2.1 Data structures
+   sis. The ﬁrst watches for non-append changes, as described
+   earlier; any truncation or write anywhere but at the previ-                  Three new structures allow the storage IDS to efﬁciently
+   ous end of a ﬁle will generate an alert. The second checks                   support the detection rules: the reverse lookup table, the
+   a ﬁle’s integrity against the password ﬁle integrity rule dis-               inode watch ﬂags, and the non-existent names table.
+   cussed earlier. After every write, the ﬁle must conform to                   Reverse lookup table: The reverse lookup table serves
+   the rigid structure of a password ﬁle (7 colons per line),                   two functions. First, it serves as a list of rules that the server
+   and all of the shells must be contained in the “acceptable”                  is currently enforcing. Second, it maps an inode number to
+   list.                                                                        a pathname. The alert generation mechanism uses the lat-
+   In addition to per-ﬁle rules, an administrator can choose to                 ter to provide the administrator with ﬁle names instead of
+                                                                                inode numbers, without resorting to a brute-force search of
+       2 The use of the NFSv2 protocol is an artifact of the server implemen-
+                                                                                the namespace.
+   tation the IDS is built into, but makes no difference in the areas we care
+   about.                                                                       The reverse lookup table is populated via the setRule()
+
+
+USENIX Association                                    12th USENIX Security Symposium                                                             145
+        Command                                                    Purpose                                                             Direction
+        setRule(path, rules)                                       Changes the watched characteristics of a ﬁle. This                  admin⇒server
+                                                                   command is used to both set and delete rules.
+        listRules()                                                Retrieves the server’s rule table as a list of                       admin⇒server
+                                                                   {pathname, rules} records.
+        alert(path, rules, operation)                              Delivers a warning of a rule violation to the admin-                 server⇒admin
+                                                                   istrator.
+
+      Table 3: Administrative commands for our storage IDS. This table lists the small set of administrative commands needed for an administrative
+      console to conﬁgure and manage the storage IDS. The ﬁrst two are sent by the console, and the third is sent by the storage IDS. The pathname refers
+      to a ﬁle relative to the root of an exported ﬁle system. The rules are a description of what to check for, which can be any of the changes described in
+      Table 2. The operation is the NFS operation that caused the rule violation.
+
+
+      RPC. Each rule’s full pathname is broken into its com-                       upon creation of a ﬁle for which a detection rule exists, the
+      ponent names, which are stored in distinct rows of the                       rules are checked and inserted in the watchflags ﬁeld of
+      table. For each component, the table records four ﬁelds:                     the inode. Together, the reverse lookup table and the non-
+      inode-number, directory-inode-number, name, and rules.                       existent names table contain the entire set of IDS rules in
+      Indexed by inode-number, an entry contains the name                          effect.
+      within a parent directory (identiﬁed by its directory-inode-
+      number). The rules associated with this name are a bitmask
+      of the attributes and patterns to watch. Since a particular                  5.2.2 Checking rules during NFS operations
+      inode number can have more than one name, multiple en-
+      tries for each inode may exist. A given inode number can                     We now describe the ﬂow of rule checking, much of which
+      be translated to a full pathname by looking up its lowest-                   is diagrammed in Figure 3, in two parts: changes to indi-
+      level name and recursively looking up the name of the cor-                   vidual ﬁles and changes to the namespace.
+      responding directory inode number. The search ends with                      Checking rules on individual file operations: For each
+      the known inode number of the root directory. All names                      NFS operation that affects only a single ﬁle, a mask of
+      for an inode can be found by following all paths given by                    rules that might be violated is computed. This mask is
+      the lookup of the inode number.                                              compared, bitwise, to the corresponding watchflags ﬁeld
+      Inode watchflags field: During the setRule() RPC, in                         in the ﬁle’s inode. For most of the rules, this comparison
+      addition to populating the reverse lookup table, a rule mask                 quickly determines if any alerts should be triggered. If the
+      of 16 bits is computed and stored in the watchflags ﬁeld                     “password ﬁle” or “append only” ﬂags are set, the corre-
+      of the watched ﬁle’s inode. Since multiple pathnames may                     sponding veriﬁcation function executes to determine if the
+      refer to the same inode, there may be more than one rule                     rule is violated.
+      for a given ﬁle, and the mask contains the union. The inode                  Checking rules on namespace operations: Namespace
+      watchflags ﬁeld is a performance enhancement designed                        operations can cause watched pathnames to appear or dis-
+      to co-locate the rules governing a ﬁle with that ﬁle’s meta-                 appear, which will usually trigger an alert. For operations
+      data. This ﬁeld is not necessary for correctness since the                   that create watched pathnames, the storage IDS moves
+      pertinent data could be read from the reverse lookup table.                  rules from the non-existent names table to the reverse
+      However, it allows efﬁcient veriﬁcation of detection rules                   lookup table. Conversely, operations that delete watched
+      during the processing of an NFS request. Since the inode is                  pathnames cause rules to move between tables in the op-
+      read as part of any ﬁle access, most rule checking becomes                   posite direction.
+      a simple mask comparison.                                                    When a name is created (via CREATE, MKDIR, LINK, or
+      Non-existent names table: The non-existent names table                       SYMLINK ) the non-existent names table is checked. If
+      lists rules for pathnames that do not currently exist. Each                  there are rules for the new ﬁle, they are checked and placed
+      entry in the table is associated with the deepest-level (ex-                 in the watchflags ﬁeld of the new inode. In addition,
+      isting) directory within the pathname of the original rule.                  the corresponding rule is removed from the non-existent
+      Each entry contains three ﬁelds: directory-inode-number,                     names table and is added to the reverse lookup table. Dur-
+      remaining-path, and rules. Indexed by directory-inode-                       ing a MKDIR, any entries in the non-existent names table
+      number, an entry speciﬁes the remaining-path. When a ﬁle                     that include the new directory as the next step in their re-
+      or directory is created or removed, the non-existent names                   maining path are replaced; the new entries are indexed by
+      table is consulted and updated, if necessary. For example,                   the new directory’s inode number and its name is removed
+                                                                                   from the remaining path.
+
+
+
+146                                                      12th USENIX Security Symposium                                            USENIX Association
+                                                                             Not watched
+                                                 Check parent inode
+                                                 for non−exist watches
+                                                                                 Add watch flags to
+                                     Yes                                         new inode and remove
+                                                                   Watched       non−exist watch
+
+        NFS Request     Is Create?                                                                           Lookup file name in    Notify          Complete
+                                                                                                             reverse lookup table   Administrator   operation
+                                                                                  Add name and
+                                                                                  watches to non−exist
+                               No                                         Yes     watches
+
+                                           Watch Triggered
+                                                             Unlink Operation?
+                       Check inode watches                                       No
+                                              Watch not
+                                              triggered
+
+
+
+
+   Figure 3: Flowchart of our storage IDS. Few structures and decision points are needed. In the common case (no rules for the ﬁle), only one inode’s
+   watchflags ﬁeld is checked. The picture does not show RENAME operations here due to their complexity.
+
+
+   When a name is removed (via UNLINK or RMDIR), the                                       5.4 Storage IDS rules in a NIDS
+   watchflags ﬁeld of the corresponding inode is checked
+   for rules. Most such rules will trigger an alert, and an en-
+                                                                                           Because NFS trafﬁc goes over a traditional network, the
+   try for them is also added to the non-existent names ta-
+                                                                                           detection rules described for our prototype storage IDS
+   ble. For RMDIR, the reverses of the actions for MKDIR are
+                                                                                           could be implemented in a NIDS. However, this would in-
+   necessary. Any non-existent table entries parented on the
+                                                                                           volve several new costs. First, it would require the NIDS to
+   removed directory must be modiﬁed. The removed direc-
+                                                                                           watch the LAN links that carry NFS activity. These links
+   tory’s name is added to the beginning of each remaining
+                                                                                           are usually higher bandwidth than the Internet uplinks on
+   path, and the directory inode number in the table is modi-
+                                                                                           which most NIDSs are used.3 Second, it would require
+   ﬁed to be the directory’s parent.
+                                                                                           that the NIDS replicate a substantial amount of work al-
+   By far, the most complex namespace operation is a RE -                                  ready performed by the NFS server, increasing the CPU
+   NAME . For a RENAME of an individual ﬁle, modifying the                                 requirements relative to an in-server storage IDS. Third,
+   rules is the same as a CREATE of the new name and a RE -                                the NIDS would have to replicate and hold substantial
+   MOVE of the old. When a directory is renamed, its sub-                                  amounts of state (e.g. mappings of ﬁle handles to their cor-
+   trees must be recursively checked for watched ﬁles. If any                              responding ﬁles). Our experiences checking rules against
+   are found, and once appropriate alerts are generated, their                             NFS traces indicate that this state grows rapidly because
+   rules and pathname up to the parent of the renamed di-                                  the NFS protocol does not expose to the network (or the
+   rectory are stored in the non-existent names table, and the                             server) when such state can be removed. Even simple at-
+   watchflags ﬁeld of the inode is cleared. Then, the non-                                 tribute updates cannot be checked without caching the old
+   existent names table must be checked (again recursively)                                values of the attributes, otherwise the NIDS could not dis-
+   for any rules that map into the directory’s new name and                                tinguish modiﬁed attributes from reapplied values. Fourth,
+   its children; such rules are checked, added to the inode’s                              rules cannot always be checked by looking only at the cur-
+   watchflags ﬁeld, and updated as for name creation.                                      rent command. The NIDS may need to read ﬁle data and
+                                                                                           attributes to deal with namespace operations, content in-
+                                                                                           tegrity checks, and update pattern rules. In addition to the
+                                                                                           performance penalty, this requires giving the NIDS read
+                                                                                           permission for all NFS ﬁles and directories.
+   5.3 Generating alerts                                                                   Given all of these issues, we believe that embedding stor-
+                                                                                           age IDS checks directly into the storage component is
+   Alerts are generated and sent immediately when a detec-                                 more appropriate.
+   tion rule is triggered. The alert consists of the original de-
+   tection rule (pathname and attributes watched), the speciﬁc
+   attributes that were affected, and the RPC operation that
+   triggered the rule. To get the original rule information, the
+   reverse lookup table is consulted. If a single RPC operation                              3 Tapping a NIDS into direct-attached storage interconnects, such as
+
+   triggers multiple rules, one alert is sent for each.                                    SCSI and FibreChannel, would be more difﬁcult.
+
+
+
+
+USENIX Association                                        12th USENIX Security Symposium                                                                        147
+      6 Evaluation                                                     Benchmark              Baseline         With IDS         Change
+                                                                       SSH untar            27.3 (0.02)       27.4 (0.02)        0.03%
+      This section evaluates the costs of our storage IDS in terms
+      of performance impact and memory required—both costs             SSH conﬁg.          42.6 (0.68)       43.2 (0.37)          1.3%
+      are minimal.                                                     SSH build            85.9 (0.18)       86.8 (0.17)         1.0%
+                                                                       PostMark            4288 (11.9)       4290 (13.0)         0.04%
+
+      6.1 Experimental setup                                         Table 4: Performance of macro benchmarks. All benchmarks were
+                                                                     run with and without the storage IDS functionality. Each number repre-
+      All experiments use the S4 NFS server, with and without        sents the average of 10 trials in seconds (with the standard deviation in
+                                                                     parenthesis).
+      the new support for storage-based intrusion detection. The
+      client system is a dual 1 GHz Pentium III with 128 MB
+      RAM and a 3Com 3C905B 100 Mbps network adapter.                  Benchmark             Baseline        With IDS           Change
+      The server is a dual 700 MHz Pentium III with 512 MB             Create                    4.32             4.35            0.7%
+      RAM, a 9 GB 10,000 RPM Quantum Atlas 10K II drive, an            Remove                    4.50             4.65            3.3%
+      Adaptec AIC-7896/7 Ultra2 SCSI controller, and an Intel          Mkdir                     4.36             4.38            0.5%
+      EtherExpress Pro 100 Mb network adapter. The client and          Rmdir                     4.52             4.59            1.5%
+      server are on the same 100 Mb network switch. The oper-          Rename ﬁle                3.81             3.91            2.6%
+      ating system on all machines is Red Hat Linux 6.2 with           Rename dir                3.91             4.04            3.3%
+      Linux kernel version 2.2.14.
+      SSH-build was constructed as a replacement for the An-         Table 5: Performance of micro benchmarks. All benchmarks were
+      drew ﬁle system benchmark [15, 36]. It consists of 3           run with and without the storage IDS functionality. Each number repre-
+                                                                     sents the average of 1000 trials in milliseconds.
+      phases: The unpack phase, which unpacks the compressed
+      tar archive of SSH v. 1.2.27 (approximately 1 MB in size
+      before decompression), stresses metadata operations on
+                                                                     formance loss in the case where no rule is violated, we ran
+      ﬁles of varying sizes. The conﬁgure phase consists of the
+                                                                     these benchmarks with no relevant rules set. As long as no
+      automatic generation of header ﬁles and makeﬁles, which
+                                                                     rules match, the results are similar with 0 rules, 1000 rules
+      involves building various small programs that check the
+                                                                     on existing ﬁles, or 1000 rules on non-existing ﬁles. Ta-
+      existing system conﬁguration. The build phase compiles,
+                                                                     ble 4 shows that the performance impact of the storage IDS
+      links, and removes temporary ﬁles. This last phase is the
+                                                                     is minimal. The largest performance difference is for the
+      most CPU intensive, but it also generates a large number
+                                                                     conﬁgure and build phases of SSH-build, which involve
+      of object ﬁles and a few executables. Both the server and
+                                                                     large numbers of namespace operations.
+      client caches are ﬂushed between phases.
+                                                                     Microbenchmarks on speciﬁc ﬁlesystem actions help ex-
+      PostMark was designed to measure the performance of
+                                                                     plain the overheads. Table 5 shows results for the most ex-
+      a ﬁle system used for electronic mail, netnews, and web
+                                                                     pensive operations, which all affect the namespace. The
+      based services [17]. It creates a large number of small
+                                                                     performance differences are caused by redundancy in the
+      randomly-sized ﬁles (between 512 B and 16 KB) and per-
+                                                                     implementation. The storage IDS code is kept separate
+      forms a speciﬁed number of transactions on them. Each
+                                                                     from the NFS server internals, valuing modularity over
+      transaction consists of two sub-transactions, with one be-
+                                                                     performance. For example, name removal operations in-
+      ing a create or delete and the other being a read or append.
+                                                                     volve a redundant directory lookup and inode fetch (from
+      The default conﬁguration used for the experiments consists
+                                                                     cache) to locate the corresponding inode’s watchflags
+      of 100,000 transactions on 20,000 ﬁles, and the biases for
+                                                                     ﬁeld.
+      transaction types are equal.
+                                                                     Rules take very little time to generate alerts. For example,
+                                                                     a write to a ﬁle with a rule set takes 4.901 milliseconds
+      6.2 Performance impact                                         if no alert is set off. If an alert is set off the time is
+                                                                     4.941 milliseconds. These represent the average over 1000
+      The storage IDS checks a ﬁle’s rules before any oper-          trials, and show a .8% overhead.
+      ation that could possibly trigger an alert. This includes
+      READ operations, since they may change a ﬁle’s last ac-
+      cess time. Additionally, namespace-modifying operations        6.3 Space efficiency
+      require further checks and possible updates of the non-
+      existent names table. To understand the performance con-       The storage IDS structures are stored on disk. To avoid
+      sequences of the storage IDS design, we ran PostMark and       extra disk accesses for most rule checking, though, it is
+      SSH-Build tests. Since our main concern is avoiding a per-     important that they ﬁt in memory.
+
+
+
+148                                            12th USENIX Security Symposium                                       USENIX Association
+   Three structures are used to check a set of rules. First, each   via the admin channel and verify that they are as intended.
+   inode in the system has an additional two-byte ﬁeld for          If so, the update is known to have succeeded, and the alert
+   the bitmask of the rules on that ﬁle. There is no cost for       can be suppressed.
+   this, because the space in the inode was previously un-          We have also performed two (much) smaller studies. First,
+   used. Linux’s ext2fs and BSD’s FFS also have sufﬁcient           we have evaluated our “hidden ﬁlename” rules by examin-
+   unused space to store such data without increasing their         ing the entire ﬁlesystems of several desktops and servers—
+   inode sizes. If space were not available, the reverse lookup     we found no uses of any of them, including the ‘.’ or ‘..’ fol-
+   table can be used instead, since it provides the same infor-     lowed by any number of spaces discussed above. Second,
+   mation. Second, for each pathname component of a rule,           we evaluated our “inode time reversal” rules by examin-
+   the reverse lookup table requires 20 + N bytes: a 16-byte        ing lengthy traces of NFS activity from our environment
+   inode number, 2 bytes for the rule bitmask, and N +2 bytes       and from two Harvard environments [8]—we found a siz-
+   for a pathname component of length N . Third, the non-           able number of false positives, caused mainly by unpack-
+   existent names table contains one entry for every ﬁle be-        ing archives with utilities like tar. Combined with the lack
+   ing watched that does not currently exist. Each entry con-       of time reversal in any of the toolkits, use of this rule may
+   sumes 274 bytes: a 16-byte inode number, 2 bytes for the         be a bad idea.
+   rule bitmask, and 256 bytes for the maximum pathname
+   supported.
+   To examine a concrete example of how an administrator            7 Additional Related Work
+   might use this system, we downloaded the open source
+   version of Tripwire [42]. Included with it is an example         Much related work has been discussed within the ﬂow of
+   rule ﬁle for Linux, containing (after expanding directories      the paper. For emphasis, we note that there have been many
+   to lists of ﬁles) 4730 rules. We examined a Red Hat Linux        intrusion detection systems focused on host OS activity
+   6.1 [31] desktop machine to obtain an idea of the number         and network communication; Axelsson [1] recently sur-
+   of watched ﬁles that actually exist on the hard drive. Of        veyed the state-of-the-art. Also, the most closely related
+   the 4730 watched ﬁles, 4689 existed on our example sys-          tool, Tripwire [18], was used as an initial template for our
+   tem. Using data structure sizes from above, reverse lookup       prototype’s ﬁle modiﬁcation detection ruleset.
+   entries for the watched ﬁles consume 141 KB. Entries in          Our work is part of a recent line of research exploiting
+   the non-existent name table for the remaining 41 watched         physical [12, 44] and virtual [4] protection boundaries to
+   ﬁles consume 11 KB. In total, only 152 KB are needed for         detect intrusions into system software. Notably, Garﬁnkel
+   the storage IDS.                                                 et al. [13] explore the utility of an IDS embedded in a vir-
+                                                                    tual machine monitor (VMM), which can inspect machine
+   6.4 False positives                                              state while being compromise independent of most host
+                                                                    software. Storage-based intrusion detection rules could be
+   We have explored the false positive rate of storage-based        embedded in a VMM’s storage module, rather than in a
+   intrusion detection in several ways.                             physical storage device, to identify suspicious storage ac-
+   To evaluate the ﬁle watch rules, two months of traces of all     tivity.
+   ﬁle system operations were gathered on a desktop machine         Perhaps the most closely related work is the original pro-
+   in our group. We compared the ﬁles modiﬁed on this sys-          posal for self-securing storage [38], which argued for
+   tem with the watched ﬁle list from the open source version       storage-embedded support for intrusion survival. Self-
+   of Tripwire. This uncovered two distinct patterns where          securing storage retains every version of all data and a
+   ﬁles were modiﬁed. Nightly, the user list (/etc/passwd)          log of all requests for a period of time called the detec-
+   on the machine was overwritten by a central server. Most         tion window. For intrusions detected within this window,
+   nights it does not change but the create and rename per-         security administrators have a wealth of information for
+   formed would have triggered an alert. Additionally, mul-         post-intrusion diagnosis and recovery.
+   tiple binaries in the system were replaced over time by          Such versioning and auditing complements storage-based
+   the administrative upgrade process. In only one case was         intrusion detection in several additional ways. First, when
+   a conﬁguration ﬁle on the system changed by a local user.        creating rules about storage activity for use in detection,
+   For alert-triggering modiﬁcations arising from explicit ad-      administrators can use the latest audit log and version his-
+   ministrative action, a storage IDS can provide an added          tory to test new rules for false alarms. Second, the audit
+   beneﬁt. If an administrator pre-informs the admin console        log could simplify implementation of rules looking for pat-
+   of updated ﬁles before they are distributed to machines,         terns of requests. Third, administrators can use the history
+   the IDS can verify that desired updates happen correctly.        to investigate alerts of suspicious behavior (i.e., to check
+   Speciﬁcally, the admin console can read the new contents         for supporting evidence within the history). Fourth, since
+
+
+
+USENIX Association                           12th USENIX Security Symposium                                                     149
+      the history is retained, a storage IDS can delay checks until     research sponsored by the Air Force Research Labora-
+      the device is idle, allowing the device to avoid performance      tory, under agreement number F49620-01-1-0433, and by
+      penalties for expensive checks by accepting a potentially         DARPA/ITO’s OASIS program, under Air Force contract
+      longer detection latency.                                         number F30602-99-2-0539-AFRL.4 Craig Soules was sup-
+                                                                        ported by a USENIX Fellowship. Garth Goodson was sup-
+                                                                        ported by an IBM Fellowship.
+      8 Conclusions and Future Work
+      A storage IDS watches system activity from a new view-
+      point, which immediately exposes some common intruder             References
+      actions. Running on separate hardware, this functionality
+      remains in place even when client OSes or user accounts            [1] S. Axelsson. Research in intrusion-detection systems: a sur-
+                                                                             vey. Technical report 98–17. Department of Computer En-
+      are compromised. Our prototype storage IDS demonstrates
+                                                                             gineering, Chalmers University of Technology, December
+      both feasibility and efﬁciency within a ﬁle server. Analysis           1998.
+      of real intrusion tools indicates that most would be imme-
+                                                                         [2] M. Bishop and M. Dilger. Checking for race conditions
+      diately detected by a storage IDS. After adjusting for stor-           in ﬁle accesses. Computing Systems, 9(2):131–152, Spring
+      age IDS presence, intrusion tools will have to choose be-              1996.
+      tween exposing themselves to detection or being removed            [3] M. Castro and B. Liskov.         Proactive recovery in a
+      whenever the system reboots.                                           Byzantine-fault-tolerant system. Symposium on Operat-
+      In continuing work, we are developing a prototype stor-                ing Systems Design and Implementation, pages 273–287.
+      age IDS embedded in a device exporting a block-based                   USENIX Association, 2000.
+      interface (SCSI). To implement the same rules as our aug-          [4] P. M. Chen and B. D. Noble. When virtual is better than
+      mented NFS server, such a device must be able to parse and             real. Hot Topics in Operating Systems, pages 133–138.
+      traverse the on-disk metadata structures of the ﬁle system             IEEE Comput. Soc., 2001.
+      it holds. For example, knowing whether /usr/sbin/sshd              [5] B. Cheswick and S. Bellovin. Firewalls and Internet secu-
+      has changed on disk requires knowing not only whether the              rity: repelling the wily hacker. Addison-Wesley, Reading,
+                                                                             Mass. and London, 1994.
+      corresponding data blocks have changed, but also whether
+      the inode still points to the same blocks and whether the          [6] D. Denning. An intrusion-detection model. IEEE Transac-
+                                                                             tions on Software Engineering, SE-13(2):222–232, Febru-
+      name still translates to the same inode. We have developed
+                                                                             ary 1987.
+      this translation functionality for two popular ﬁle systems,
+                                                                         [7] D. E. Denning. Information warfare and security. Addison-
+      Linux’s ext2fs and FreeBSD’s FFS. The additional com-
+                                                                             Wesley, 1999.
+      plexity required is small (under 200 lines of C code for
+                                                                         [8] D. Ellard, J. Ledlie, P. Malkani, and M. Seltzer. Passive
+      each), simple (under 3 days of programming effort each),
+                                                                             NFS tracing of an email and research workload. Confer-
+      and changes infrequently (about 5 years between incom-
+                                                                             ence on File and Storage Technologies, pages 203–217.
+      patible changes to on-disk structures). The latter, in partic-         USENIX Association, 2003.
+      ular, indicates that device vendors can deploy ﬁrmware and
+                                                                         [9] D. Farmer. What are MACtimes? Dr. Dobb’s Journal,
+      expect useful lifetimes that match the hardware. Sivathanu             25(10):68–74, October 2000.
+      et al. [37] have evaluated the costs and beneﬁts of device-
+                                                                        [10] S. Forrest, S. A. Hofmeyr, A. Somayaji, and T. A.
+      embedded FS knowledge more generally, ﬁnding that it is                Longstaff. A sense of self for UNIX processes. IEEE
+      feasible and valuable.                                                 Symposium on Security and Privacy, pages 120–128. IEEE,
+      Another continuing direction is exploration of less exact              1996.
+      rules and their impact on detection and false positive rates.     [11] G. R. Ganger, G. Economou, and S. M. Bielski. Find-
+      In particular, the potential of pattern matching rules and             ing and Containing Enemies Within the Walls with Self-
+      general anomaly detection for storage remains unknown.                 securing Network Interfaces. Carnegie Mellon University
+                                                                             Technical Report CMU-CS-03-109. January 2003.
+                                                                        [12] G. R. Ganger and D. F. Nagle. Better security via smarter
+                                                                             devices. Hot Topics in Operating Systems, pages 100–105.
+      Acknowledgments                                                        IEEE, 2001.
+      We thank the members and companies of the PDL Consor-
+      tium (including EMC, Hewlett-Packard, Hitachi, IBM, In-               4 The U.S. Government is authorized to reproduce and distribute
+
+      tel, Microsoft, Network Appliance, Oracle, Panasas, Sea-          reprints for Governmental purposes notwithstanding any copyright no-
+                                                                        tation thereon. The views and conclusions contained herein are those of
+      gate, Sun, and Veritas) for their interest, insights, feedback,
+                                                                        the authors and should not be interpreted as necessarily representing the
+      and support. We thank IBM and Intel for hardware grants           ofﬁcial policies or endorsements, either expressed or implied, of the Air
+      supporting our research efforts. This material is based on        Force Research Laboratory or the U.S. Government.
+
+
+
+
+150                                               12th USENIX Security Symposium                                       USENIX Association
+   [13] T. Garﬁnkel and M. Rosenblum. A virtual machine intro-         [31] Red Hat Linux 6.1, 4 March 1999. ftp://ftp.redhat.
+        spection based architecture for intrusion detection. NDSS.          com/pub/redhat/linux/6.1/.
+        The Internet Society, 2003.                                    [32] M. Rosenblum and J. K. Ousterhout. The design and im-
+   [14] H. Gobioff. Security for a high performance commodity               plementation of a log-structured ﬁle system. ACM Trans-
+        storage subsystem. PhD thesis, published as TR CMU–CS–              actions on Computer Systems, 10(1):26–52. ACM Press,
+        99–160. Carnegie-Mellon University, Pittsburgh, PA, July            February 1992.
+        1999.                                                          [33] V. Samar and R. J. Schemers III. Unified login with plug-
+   [15] J. H. Howard, M. L. Kazar, S. G. Menees, D. A. Nichols,             gable authentication modules (PAM). Open Software Foun-
+        M. Satyanarayanan, R. N. Sidebotham, and M. J. West.                dation RFC 86.0. Open Software Foundation, October
+        Scale and performance in a distributed ﬁle system. ACM              1995.
+        Transactions on Computer Systems, 6(1):51–81, February         [34] J. Scambray, S. McClure, and G. Kurtz. Hacking exposed:
+        1988.                                                               network security secrets & solutions. Osborne/McGraw-
+   [16] Y. N. Huang, C. M. R. Kintala, L. Bernstein, and Y. M.              Hill, 2001.
+        Wang. Components for software fault-tolerance and re-          [35] B. Schneier and J. Kelsey. Secure audit logs to support
+        juvenation. AT&T Bell Laboratories Technical Journal,               computer forensics. ACM Transactions on Information and
+        75(2):29–37, March-April 1996.                                      System Security, 2(2):159–176. ACM, May 1999.
+   [17] J. Katcher. PostMark: a new file system benchmark. Tech-       [36] M. I. Seltzer, G. R. Ganger, M. K. McKusick, K. A. Smith,
+        nical report TR3022. Network Appliance, October 1997.               C. A. N. Soules, and C. A. Stein. Journaling versus Soft Up-
+   [18] G. H. Kim and E. H. Spafford. The design and implementa-            dates: Asynchronous Meta-data Protection in File Systems.
+        tion of Tripwire: a ﬁle system integrity checker. Conference        USENIX Annual Technical Conference, 2000.
+        on Computer and Communications Security, pages 18–29.          [37] M. Sivathanu, V. Prabhakaran, F. I. Popovici, T. E.
+        ACM, 1994.                                                          Denehy, A. C. Arpaci-Dusseau, and R. H. Arpaci-Dusseau.
+   [19] C. Ko, M. Ruschitzka, and K. Levitt. Execution monitor-             Semantically-smart disk systems. Conference on File and
+        ing of security-critical programs in distributed systems: a         Storage Technologies, pages 73–89. USENIX Association,
+        speciﬁcation-based approach. IEEE Symposium on Secu-                2003.
+        rity and Privacy, pages 175–187. IEEE, 1997.                   [38] J. D. Strunk, G. R. Goodson, M. L. Scheinholtz, C. A. N.
+   [20] P. Kumar and M. Satyanarayanan. Flexible and safe reso-             Soules, and G. R. Ganger. Self-securing storage: protect-
+        lution of ﬁle conﬂicts. USENIX Annual Technical Confer-             ing data in compromised systems. Symposium on Operat-
+        ence, pages 95–106. USENIX Association, 1995.                       ing Systems Design and Implementation, pages 165–180.
+   [21] R. Lemos.        Putting fun back into hacking.         ZD-         USENIX Association, 2000.
+        Net News, 5 August 2002. http://zdnet.com.com/                 [39] J. Sugerman, G. Venkitachalam, and B.-H. Lim. Virtualiz-
+        2100-1105-948404.html.                                              ing I/O Devices on VMware Workstation’s Hosted Virtual
+   [22] P. Liu, S. Jajodia, and C. D. McCollum. Intrusion conﬁne-           Machine Monitor. USENIX Annual Technical Conference,
+        ment by isolation in information systems. IFIP Working              pages 1–14. USENIX Association, 2001.
+        Conference on Database Security, pages 3–18. IFIP, 2000.       [40] Sun Microsystems. NFS: network file system protocol spec-
+   [23] T. F. Lunt and R. Jagannathan. A prototype real-time                ification, RFC–1094, March 1989.
+        intrusion-detection expert system. IEEE Symposium on Se-       [41] D. B. Terry, M. M. Theimer, K. Petersen, A. J. Demers,
+        curity and Privacy, pages 59–66. IEEE, 1988.                        M. J. Spreitzer, and C. H. Hauser. Managing update con-
+   [24] McAfee NetShield for Celerra.               EMC Corpora-            ﬂicts in Bayou, a weakly connected replicated storage sys-
+        tion, August 2002.            http://www.emc.com/pdf/               tem. ACM Symposium on Operating System Principles.
+        partnersalliances/einfo/McAfee_netshield.pdf.                       Published as Operating Systems Review, 29(5), 1995.
+   [25] NFR Security. http://www.nfr.net/, August 2002.                [42] Tripwire     Open      Souce      2.3.1,   August     2002.
+   [26] Packet Storm Security. Packet Storm, 26 January 2003.               http://ftp4.sf.net/sourceforge/tripwire/
+        http://www.packetstormsecurity.org/.                                tripwire-2.3.1-2.tar.gz.
+   [27] V. Paxson. Bro: a system for detecting network intruders       [43] K. Vaidyanathan, R. E. Harper, S. W. Hunter, and K. S.
+        in real-time. USENIX Security Symposium, pages 31–51.               Trivedi. Analysis and implementation of software rejuve-
+        USENIX Association, 1998.                                           nation in cluster systems. ACM SIGMETRICS Confer-
+                                                                            ence on Measurement and Modeling of Computer Systems.
+   [28] J. Phillips. Antivirus scanning best practices guide. Tech-
+                                                                            Published as Performance Evaluation Review, 29(1):62–71.
+        nical report 3107. Network Appliance Inc. http://www.
+                                                                            ACM Press, 2002.
+        netapp.com/tech_library/3107.html.
+                                                                       [44] X. Zhang, L. van Doorn, T. Jaeger, R. Perez, and R. Sailer.
+   [29] P. A. Porras and P. G. Neumann. EMERALD: event mon-
+                                                                            Secure Coprocessor-based Intrusion Detection.         ACM
+        itoring enabling responses to anomalous live disturbances.
+                                                                            SIGOPS European Workshop. ACM, 2002.
+        National Information Systems Security Conference, pages
+        353–365, 1997.
+   [30] W. Purczynski. GNU ﬁleutils – recursive directory removal
+        race condition. BugTraq mailing list, 11 March 2002.
+
+
+
+USENIX Association                             12th USENIX Security Symposium                                                        151
+
