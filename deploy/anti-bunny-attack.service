@@ -1,0 +1,17 @@
+[Unit]
+Description=Simulador anti-bunny-virus con freno de PID
+After=anti-bunny-virus.service
+
+[Service]
+Type=simple
+User=antibunny-test
+RuntimeDirectory=anti-bunny
+RuntimeDirectoryMode=0750
+Environment=ANTI_BUNNY_AUTH_FILE=/run/anti-bunny/authorized_pgid
+WorkingDirectory=/opt/anti-bunny-virus
+ExecStart=/usr/bin/setsid /opt/anti-bunny-virus/simuladores/simulador_fork_bomb
+PIDsMax=256
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

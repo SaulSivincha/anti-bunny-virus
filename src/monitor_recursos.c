@@ -10,101 +10,36 @@
 #include "monitor_recursos.h"
 
 #define MAX_HISTORIAL_RECURSOS 8192
-
-typedef struct {
-    int pid;
-    unsigned long long ticks;
-} MuestraAnterior;
-
+typedef struct { int pid; unsigned long long starttime, ticks; float memoria_mb; } MuestraAnterior;
 static MuestraAnterior historial[MAX_HISTORIAL_RECURSOS];
 static int total_historial;
 static struct timespec instante_anterior;
 static int hay_muestra_anterior;
 
-static int es_pid(const char *nombre) {
-    if (*nombre == '\0') return 0;
-    for (; *nombre != '\0'; ++nombre) if (!isdigit((unsigned char)*nombre)) return 0;
-    return 1;
+static int es_pid(const char *n) { if (*n == '\0') return 0; for (; *n; ++n) if (!isdigit((unsigned char)*n)) return 0; return 1; }
+static const MuestraAnterior *previo(int pid, unsigned long long starttime) {
+    for (int i = 0; i < total_historial; ++i) if (historial[i].pid == pid && historial[i].starttime == starttime) return &historial[i];
+    return NULL;
 }
-
-static unsigned long long ticks_anteriores(int pid) {
-    for (int i = 0; i < total_historial; ++i) {
-        if (historial[i].pid == pid) return historial[i].ticks;
-    }
-    return 0;
-}
-
 static int leer_recurso(int pid, RecursoInfo *recurso, unsigned long long *ticks) {
-    char ruta[PATH_MAX];
-    char linea[4096];
-    char *cierre;
-    FILE *archivo;
-    unsigned long long utime, stime;
-    long rss_kb = 0;
-
+    char ruta[PATH_MAX], linea[4096], *cierre, *guardar = NULL, *token;
+    FILE *archivo; int indice = 0; long rss_kb = 0;
+    memset(recurso, 0, sizeof(*recurso));
     snprintf(ruta, sizeof(ruta), "/proc/%d/stat", pid);
     archivo = fopen(ruta, "r");
-    if (archivo == NULL || fgets(linea, sizeof(linea), archivo) == NULL) {
-        if (archivo != NULL) fclose(archivo);
-        return -1;
-    }
-    fclose(archivo);
-    cierre = strrchr(linea, ')');
-    if (cierre == NULL ||
-        sscanf(cierre + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu",
-               &utime, &stime) != 2) return -1;
-
-    snprintf(ruta, sizeof(ruta), "/proc/%d/status", pid);
-    archivo = fopen(ruta, "r");
-    if (archivo == NULL) return -1;
-    while (fgets(linea, sizeof(linea), archivo) != NULL) {
-        if (sscanf(linea, "Name: %255s", recurso->nombre) == 1) continue;
-        if (sscanf(linea, "VmRSS: %ld kB", &rss_kb) == 1) break;
-    }
-    fclose(archivo);
-
-    recurso->pid = pid;
-    recurso->memoria_mb = (float)rss_kb / 1024.0f;
-    *ticks = utime + stime;
-    return 0;
+    if (archivo == NULL || fgets(linea, sizeof(linea), archivo) == NULL) { if (archivo) fclose(archivo); return -1; }
+    fclose(archivo); cierre = strrchr(linea, ')'); if (cierre == NULL) return -1;
+    token = strtok_r(cierre + 2, " ", &guardar);
+    while (token != NULL) { if (indice == 11) *ticks = strtoull(token, NULL, 10); if (indice == 12) *ticks += strtoull(token, NULL, 10); if (indice == 19) recurso->starttime = strtoull(token, NULL, 10); token = strtok_r(NULL, " ", &guardar); ++indice; }
+    if (indice <= 19) return -1;
+    snprintf(ruta, sizeof(ruta), "/proc/%d/status", pid); archivo = fopen(ruta, "r"); if (archivo == NULL) return -1;
+    while (fgets(linea, sizeof(linea), archivo) != NULL) { if (sscanf(linea, "Name: %255s", recurso->nombre) == 1) continue; if (sscanf(linea, "VmRSS: %ld kB", &rss_kb) == 1) break; }
+    fclose(archivo); recurso->pid = pid; recurso->memoria_mb = (float)rss_kb / 1024.0f; return 0;
 }
-
 int obtener_recursos(RecursoInfo *lista, int max_procesos) {
-    DIR *proc = opendir("/proc");
-    struct dirent *entrada;
-    struct timespec ahora;
-    MuestraAnterior nuevo_historial[MAX_HISTORIAL_RECURSOS];
-    long ticks_por_segundo = sysconf(_SC_CLK_TCK);
-    double transcurrido = 0.0;
-    int total = 0;
-
-    if (proc == NULL || lista == NULL || max_procesos <= 0 || ticks_por_segundo <= 0) return 0;
-    clock_gettime(CLOCK_MONOTONIC, &ahora);
-    if (hay_muestra_anterior) {
-        transcurrido = (double)(ahora.tv_sec - instante_anterior.tv_sec) +
-                      (double)(ahora.tv_nsec - instante_anterior.tv_nsec) / 1000000000.0;
-    }
-
-    while ((entrada = readdir(proc)) != NULL && total < max_procesos && total < MAX_HISTORIAL_RECURSOS) {
-        unsigned long long ticks;
-        if (!es_pid(entrada->d_name)) continue;
-        if (leer_recurso(atoi(entrada->d_name), &lista[total], &ticks) != 0) continue;
-        if (transcurrido > 0.0) {
-            unsigned long long previo = ticks_anteriores(lista[total].pid);
-            lista[total].cpu_porcentaje = ticks >= previo
-                ? (float)(((double)(ticks - previo) / (double)ticks_por_segundo) / transcurrido * 100.0)
-                : 0.0f;
-        } else {
-            lista[total].cpu_porcentaje = 0.0f;
-        }
-        nuevo_historial[total].pid = lista[total].pid;
-        nuevo_historial[total].ticks = ticks;
-        ++total;
-    }
-    closedir(proc);
-    memcpy(historial, nuevo_historial, (size_t)total * sizeof(MuestraAnterior));
-    total_historial = total;
-    instante_anterior = ahora;
-    hay_muestra_anterior = 1;
-    return total;
+    DIR *proc = opendir("/proc"); struct dirent *entrada; struct timespec ahora; long hz = sysconf(_SC_CLK_TCK); double dt = 0.0; int total = 0;
+    if (proc == NULL || lista == NULL || max_procesos <= 0 || hz <= 0) return 0;
+    clock_gettime(CLOCK_MONOTONIC, &ahora); if (hay_muestra_anterior) dt = (double)(ahora.tv_sec - instante_anterior.tv_sec) + (double)(ahora.tv_nsec - instante_anterior.tv_nsec) / 1e9;
+    while ((entrada = readdir(proc)) != NULL && total < max_procesos && total < MAX_HISTORIAL_RECURSOS) { unsigned long long ticks = 0; const MuestraAnterior *p; if (!es_pid(entrada->d_name) || leer_recurso(atoi(entrada->d_name), &lista[total], &ticks) != 0) continue; p = previo(lista[total].pid, lista[total].starttime); if (p != NULL && dt > 0.0) { lista[total].cpu_porcentaje = (float)(((double)(ticks - p->ticks) / hz) / dt * 100.0); lista[total].delta_memoria_mb_s = (lista[total].memoria_mb - p->memoria_mb) / (float)dt; } historial[total] = (MuestraAnterior){lista[total].pid, lista[total].starttime, ticks, lista[total].memoria_mb}; ++total; }
+    closedir(proc); total_historial = total; instante_anterior = ahora; hay_muestra_anterior = 1; return total;
 }

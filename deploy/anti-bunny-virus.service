@@ -1,0 +1,19 @@
+[Unit]
+Description=Monitor anti-bunny-virus de laboratorio
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/anti-bunny/lab.env
+WorkingDirectory=/opt/anti-bunny-virus
+ExecStart=/opt/anti-bunny-virus/anti-bunny-virus
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=false
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/anti-bunny-virus/logs /tmp/anti_bunny_demo
+
+[Install]
+WantedBy=multi-user.target
