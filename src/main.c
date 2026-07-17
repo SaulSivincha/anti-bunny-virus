@@ -29,25 +29,26 @@ int main(void) {
     printf("anti-bunny-virus iniciado en modo=%s\n", MODO_RESPUESTA);
 
     // Inicialización simulada de buffers de almacenamiento estáticos (para evitar fugas de memoria)
-    ProcesoInfo procesos[1000];
-    RecursoInfo recursos[1000];
-    ArchivoInfo archivos[200];
-    Alerta alertas[100];
+    static ProcesoInfo procesos[MAX_PROCESOS_MONITOREADOS];
+    static RecursoInfo recursos[MAX_PROCESOS_MONITOREADOS];
+    static ArchivoInfo archivos[MAX_ARCHIVOS_MONITOREADOS];
+    static Alerta alertas[MAX_ALERTAS_POR_CICLO];
 
     while (ejecutar) {
         // Recolección de datos desde los módulos recolectores
-        int n_proc = obtener_procesos(procesos, 1000);
-        int n_rec = obtener_recursos(recursos, 1000);
+        int n_proc = obtener_procesos(procesos, MAX_PROCESOS_MONITOREADOS);
+        int n_rec = obtener_recursos(recursos, MAX_PROCESOS_MONITOREADOS);
         
         // En C, pasamos la carpeta vigilada e intervalo de tiempo de forma explícita
-        int n_arch = escanear_archivos(DIRECTORIO_MONITOREADO, INTERVALO_MONITOREO, archivos, 200);
+        int n_arch = escanear_archivos(DIRECTORIO_MONITOREADO, INTERVALO_MONITOREO,
+                                       archivos, MAX_ARCHIVOS_MONITOREADOS);
 
         // Análisis por comportamiento en el motor de detección
         int n_alertas = detectar(
             procesos, n_proc,
             recursos, n_rec,
             archivos, n_arch,
-            alertas, 100,
+            alertas, MAX_ALERTAS_POR_CICLO,
             MAX_HIJOS_POR_PROCESO,
             MAX_MEMORIA_MB,
             MAX_CPU_PORCENTAJE,

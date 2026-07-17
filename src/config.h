@@ -13,5 +13,8 @@
 #define MAX_CPU_PORCENTAJE 80.0  // Límite de uso de CPU (%)
 #define MAX_CRECIMIENTO_ARCHIVO_MB_S 5.0  // Velocidad de llenado de ficheros
 #define DIRECTORIO_MONITOREADO "/tmp/anti_bunny_demo" // Carpeta de vigilancia
+#define MAX_PROCESOS_MONITOREADOS 8192
+#define MAX_ARCHIVOS_MONITOREADOS 1024
+#define MAX_ALERTAS_POR_CICLO 256
 
 #endif

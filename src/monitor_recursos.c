@@ -9,7 +9,7 @@
 
 #include "monitor_recursos.h"
 
-#define MAX_HISTORIAL_RECURSOS 4096
+#define MAX_HISTORIAL_RECURSOS 8192
 
 typedef struct {
     int pid;
