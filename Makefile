@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Wpedantic -std=c11 -O2 -D_POSIX_C_SOURCE=200809L
 SHELL = /bin/bash
 TARGET = anti-bunny-virus
-SIMULADORES = simuladores/simulador_fork_bomb simuladores/simulador_memoria simuladores/simulador_archivo
+SIMULADORES = simuladores/simulador_fork_bomb simuladores/simulador_memoria simuladores/simulador_archivo simuladores/simulador_degradacion
 SCRIPTS_VALIDACION = $(wildcard scripts/validacion/*.sh)
 
 SRCS = src/main.c \
@@ -20,6 +20,9 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
 
 simuladores/simulador_fork_bomb: simuladores/simulador_fork_bomb.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+simuladores/simulador_degradacion: simuladores/simulador_degradacion.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 simuladores/simulador_memoria: simuladores/simulador_memoria.c
