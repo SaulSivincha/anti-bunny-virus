@@ -37,9 +37,46 @@ static int leer_recurso(int pid, RecursoInfo *recurso, unsigned long long *ticks
     fclose(archivo); recurso->pid = pid; recurso->memoria_mb = (float)rss_kb / 1024.0f; return 0;
 }
 int obtener_recursos(RecursoInfo *lista, int max_procesos) {
-    DIR *proc = opendir("/proc"); struct dirent *entrada; struct timespec ahora; long hz = sysconf(_SC_CLK_TCK); double dt = 0.0; int total = 0;
+    DIR *proc = opendir("/proc");
+    struct dirent *entrada;
+    struct timespec ahora;
+    long hz = sysconf(_SC_CLK_TCK);
+    double dt = 0.0;
+    int total = 0;
+    static unsigned long long ticks_actuales[MAX_HISTORIAL_RECURSOS];
     if (proc == NULL || lista == NULL || max_procesos <= 0 || hz <= 0) return 0;
-    clock_gettime(CLOCK_MONOTONIC, &ahora); if (hay_muestra_anterior) dt = (double)(ahora.tv_sec - instante_anterior.tv_sec) + (double)(ahora.tv_nsec - instante_anterior.tv_nsec) / 1e9;
-    while ((entrada = readdir(proc)) != NULL && total < max_procesos && total < MAX_HISTORIAL_RECURSOS) { unsigned long long ticks = 0; const MuestraAnterior *p; if (!es_pid(entrada->d_name) || leer_recurso(atoi(entrada->d_name), &lista[total], &ticks) != 0) continue; p = previo(lista[total].pid, lista[total].starttime); if (p != NULL && dt > 0.0) { lista[total].cpu_porcentaje = (float)(((double)(ticks - p->ticks) / hz) / dt * 100.0); lista[total].delta_memoria_mb_s = (lista[total].memoria_mb - p->memoria_mb) / (float)dt; } historial[total] = (MuestraAnterior){lista[total].pid, lista[total].starttime, ticks, lista[total].memoria_mb}; ++total; }
-    closedir(proc); total_historial = total; instante_anterior = ahora; hay_muestra_anterior = 1; return total;
+
+    clock_gettime(CLOCK_MONOTONIC, &ahora);
+    if (hay_muestra_anterior) {
+        dt = (double)(ahora.tv_sec - instante_anterior.tv_sec) + 
+             (double)(ahora.tv_nsec - instante_anterior.tv_nsec) / 1e9;
+    }
+    while ((entrada = readdir(proc)) != NULL && total < max_procesos && total < MAX_HISTORIAL_RECURSOS) {
+        unsigned long long ticks = 0;
+        const MuestraAnterior *p;
+        
+        if (!es_pid(entrada->d_name) || leer_recurso(atoi(entrada->d_name), &lista[total], &ticks) != 0) continue;
+        
+        p = previo(lista[total].pid, lista[total].starttime);
+        if (p != NULL && dt > 0.0) {
+            lista[total].cpu_porcentaje = (float)(((double)(ticks - p->ticks) / hz) / dt * 100.0);
+            lista[total].delta_memoria_mb_s = (lista[total].memoria_mb - p->memoria_mb) / (float)dt;
+        }
+        ticks_actuales[total] = ticks;
+        ++total;
+    }
+    closedir(proc);
+    total_historial = 0;
+    for (int i = 0; i < total && total_historial < MAX_HISTORIAL_RECURSOS; ++i) {
+        historial[total_historial] = (MuestraAnterior){
+            .pid = lista[i].pid,
+            .starttime = lista[i].starttime,
+            .ticks = ticks_actuales[i],
+            .memoria_mb = lista[i].memoria_mb
+        };
+        ++total_historial;
+    }
+    instante_anterior = ahora;
+    hay_muestra_anterior = 1;
+    return total;
 }

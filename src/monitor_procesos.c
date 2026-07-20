@@ -103,14 +103,28 @@ int obtener_procesos(ProcesoInfo *lista, int max_procesos) {
     }
     closedir(proc);
     for (int i = 0; i < total; ++i) {
-        for (int j = 0; j < total; ++j) if (lista[j].ppid == lista[i].pid) ++lista[i].hijos;
-        int previo = hijos_previos(&lista[i]);
+        for (int j = 0; j < total; ++j) {
+            if (lista[j].ppid == lista[i].pid) {
+                ++lista[i].hijos;
+            }
+        }
+        int previo = hay_muestra_anterior ? hijos_previos(&lista[i]) : lista[i].hijos;
+        
         lista[i].hijos_nuevos = lista[i].hijos > previo ? lista[i].hijos - previo : 0;
         lista[i].hijos_nuevos_s = transcurrido > 0.0 ? (float)(lista[i].hijos_nuevos / transcurrido) : 0.0f;
-        historial[i] = (MuestraProceso){lista[i].pid, lista[i].starttime, lista[i].hijos};
     }
-    total_historial = total;
+    total_historial = 0;
+    for (int i = 0; i < total && total_historial < MAX_HISTORIAL_PROCESOS; ++i) {
+        historial[total_historial] = (MuestraProceso){
+            .pid = lista[i].pid,
+            .starttime = lista[i].starttime,
+            .hijos = lista[i].hijos
+        };
+        ++total_historial;
+    }
+
     instante_anterior = ahora;
     hay_muestra_anterior = 1;
+
     return total;
 }
