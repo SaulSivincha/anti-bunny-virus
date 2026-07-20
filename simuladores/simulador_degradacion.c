@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -14,7 +15,12 @@ static void manejar_senal(int signo) {
     terminar = 1;
 }
 
-static long leer_entero(const char *nombre, long defecto, long minimo, long maximo) {
+static long leer_entero(
+    const char *nombre,
+    long defecto,
+    long minimo,
+    long maximo
+) {
     const char *valor = getenv(nombre);
     char *fin = NULL;
     long numero;
@@ -25,25 +31,91 @@ static long leer_entero(const char *nombre, long defecto, long minimo, long maxi
     errno = 0;
     numero = strtol(valor, &fin, 10);
 
-    if (errno != 0 || fin == valor || *fin != '\0' ||
-        numero < minimo || numero > maximo) {
-        fprintf(stderr,
-                "Valor invalido para %s=%s; usando %ld\n",
-                nombre, valor, defecto);
+    if (errno != 0 ||
+        fin == valor ||
+        *fin != '\0' ||
+        numero < minimo ||
+        numero > maximo) {
+
+        fprintf(
+            stderr,
+            "Valor invalido para %s=%s; usando %ld\n",
+            nombre,
+            valor,
+            defecto
+        );
+
         return defecto;
     }
 
     return numero;
 }
 
-int main(void) {
+static void proceso_pasivo(void) {
+    while (!terminar)
+        pause();
+
+    _exit(0);
+}
+
+static void worker_cpu(void) {
+    volatile unsigned long long valor = 1;
+
+    while (!terminar) {
+        for (unsigned long i = 0; i < 1000000UL; ++i)
+            valor = valor * 1664525ULL + 1013904223ULL;
+    }
+
+    (void)valor;
+    _exit(0);
+}
+
+static unsigned char *reservar_memoria(long memoria_mb) {
+    if (memoria_mb <= 0)
+        return NULL;
+
+    size_t bytes = (size_t)memoria_mb * 1024U * 1024U;
+
+    unsigned char *memoria = malloc(bytes);
+
+    if (memoria == NULL) {
+        perror("malloc memoria de carga");
+        return NULL;
+    }
+
     /*
-     * Valores conservadores por defecto.
-     * Para una corrida experimental se configuran mediante variables
-     * de entorno sin recompilar el programa.
+     * Tocamos cada pagina para forzar asignacion fisica real
+     * en lugar de depender solo de memoria virtual reservada.
      */
+    long pagina = sysconf(_SC_PAGESIZE);
+
+    if (pagina <= 0)
+        pagina = 4096;
+
+    for (size_t i = 0; i < bytes; i += (size_t)pagina)
+        memoria[i] = (unsigned char)(i & 0xFF);
+
+    if (bytes > 0)
+        memoria[bytes - 1] = 1;
+
+    return memoria;
+}
+
+static void dormir_ms(long milisegundos) {
+    struct timespec espera = {
+        .tv_sec = milisegundos / 1000,
+        .tv_nsec = (milisegundos % 1000) * 1000000L
+    };
+
+    while (!terminar && nanosleep(&espera, &espera) != 0) {
+        if (errno != EINTR)
+            break;
+    }
+}
+
+int main(void) {
     long objetivo = leer_entero(
-        "DEGRADACION_PROCESOS", 128, 1, 5000
+        "DEGRADACION_PROCESOS", 128, 0, 5000
     );
 
     long lote = leer_entero(
@@ -58,7 +130,16 @@ int main(void) {
         "DEGRADACION_DURACION_S", 30, 1, 3600
     );
 
+    long memoria_mb = leer_entero(
+        "DEGRADACION_MEMORIA_MB", 0, 0, 1024
+    );
+
+    long cpu_workers = leer_entero(
+        "DEGRADACION_CPU_WORKERS", 0, 0, 16
+    );
+
     struct sigaction accion = {0};
+
     accion.sa_handler = manejar_senal;
     sigemptyset(&accion.sa_mask);
 
@@ -67,20 +148,47 @@ int main(void) {
 
     printf(
         "Simulador de degradacion controlada\n"
-        "PID=%d PGID=%d objetivo=%ld lote=%ld intervalo_ms=%ld duracion_s=%ld\n",
+        "PID=%d PGID=%d procesos=%ld lote=%ld "
+        "intervalo_ms=%ld duracion_s=%ld "
+        "memoria_mb=%ld cpu_workers=%ld\n",
         (int)getpid(),
         (int)getpgrp(),
         objetivo,
         lote,
         intervalo_ms,
-        duracion_s
+        duracion_s,
+        memoria_mb,
+        cpu_workers
     );
+
     fflush(stdout);
 
-    pid_t *hijos = calloc((size_t)objetivo, sizeof(pid_t));
-    if (hijos == NULL) {
-        perror("calloc");
-        return 1;
+    /*
+     * La memoria se reserva en el proceso padre despues de crear
+     * los hijos pasivos. De esta forma evitamos multiplicar
+     * accidentalmente la carga de RAM entre todos los procesos.
+     */
+    pid_t *hijos = NULL;
+
+    if (objetivo > 0) {
+        hijos = calloc((size_t)objetivo, sizeof(pid_t));
+
+        if (hijos == NULL) {
+            perror("calloc hijos");
+            return 1;
+        }
+    }
+
+    pid_t *workers = NULL;
+
+    if (cpu_workers > 0) {
+        workers = calloc((size_t)cpu_workers, sizeof(pid_t));
+
+        if (workers == NULL) {
+            perror("calloc workers");
+            free(hijos);
+            return 1;
+        }
     }
 
     long creados = 0;
@@ -95,49 +203,112 @@ int main(void) {
             pid_t pid = fork();
 
             if (pid < 0) {
-                perror("fork");
+                perror("fork proceso pasivo");
                 terminar = 1;
                 break;
             }
 
-            if (pid == 0) {
-                while (!terminar)
-                    pause();
-
-                _exit(0);
-            }
+            if (pid == 0)
+                proceso_pasivo();
 
             hijos[creados++] = pid;
         }
 
-        printf("procesos_creados=%ld/%ld\n", creados, objetivo);
+        printf(
+            "fase=procesos procesos_creados=%ld/%ld\n",
+            creados,
+            objetivo
+        );
+
         fflush(stdout);
 
-        struct timespec espera = {
-            .tv_sec = intervalo_ms / 1000,
-            .tv_nsec = (intervalo_ms % 1000) * 1000000L
-        };
+        dormir_ms(intervalo_ms);
+    }
 
-        nanosleep(&espera, NULL);
+    unsigned char *memoria = NULL;
+
+    if (!terminar && memoria_mb > 0) {
+        printf(
+            "fase=memoria reservando=%ld_MB\n",
+            memoria_mb
+        );
+
+        fflush(stdout);
+
+        memoria = reservar_memoria(memoria_mb);
+
+        if (memoria == NULL) {
+            fprintf(
+                stderr,
+                "No fue posible reservar la memoria solicitada.\n"
+            );
+
+            terminar = 1;
+        } else {
+            printf(
+                "fase=memoria reservada=%ld_MB\n",
+                memoria_mb
+            );
+
+            fflush(stdout);
+        }
+    }
+
+    long workers_creados = 0;
+
+    if (!terminar && cpu_workers > 0) {
+        for (long i = 0; i < cpu_workers; ++i) {
+            pid_t pid = fork();
+
+            if (pid < 0) {
+                perror("fork worker CPU");
+                terminar = 1;
+                break;
+            }
+
+            if (pid == 0)
+                worker_cpu();
+
+            workers[workers_creados++] = pid;
+        }
+
+        printf(
+            "fase=cpu workers_creados=%ld/%ld\n",
+            workers_creados,
+            cpu_workers
+        );
+
+        fflush(stdout);
     }
 
     if (!terminar) {
         printf(
-            "Objetivo alcanzado. Manteniendo carga durante %ld segundos.\n",
+            "fase=carga_estable duracion_s=%ld\n",
             duracion_s
         );
+
         fflush(stdout);
 
         for (long i = 0; i < duracion_s && !terminar; ++i)
             sleep(1);
     }
 
-    printf("Finalizando procesos hijos...\n");
+    printf("fase=limpieza iniciando\n");
     fflush(stdout);
+
+    for (long i = 0; i < workers_creados; ++i) {
+        if (workers[i] > 0)
+            kill(workers[i], SIGTERM);
+    }
 
     for (long i = 0; i < creados; ++i) {
         if (hijos[i] > 0)
             kill(hijos[i], SIGTERM);
+    }
+
+    for (long i = 0; i < workers_creados; ++i) {
+        if (workers[i] > 0)
+            waitpid(workers[i], NULL, 0);
     }
 
     for (long i = 0; i < creados; ++i) {
@@ -145,8 +316,19 @@ int main(void) {
             waitpid(hijos[i], NULL, 0);
     }
 
+    free(memoria);
+    free(workers);
     free(hijos);
 
-    printf("Simulador finalizado correctamente.\n");
+    printf(
+        "fase=finalizado procesos=%ld "
+        "workers_cpu=%ld memoria_mb=%ld\n",
+        creados,
+        workers_creados,
+        memoria_mb
+    );
+
+    fflush(stdout);
+
     return 0;
 }
