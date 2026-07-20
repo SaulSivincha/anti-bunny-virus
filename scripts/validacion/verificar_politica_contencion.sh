@@ -23,14 +23,24 @@ exigir src/config.h '^#define MODO_RESPUESTA "alerta"$' \
     'el modo predeterminado solo registra alertas'
 exigir src/config.h '^#define USUARIO_LABORATORIO "antibunny-test"$' \
     'el usuario de laboratorio está fijado'
-exigir src/respuesta.c 'a->accionable.*strcmp\(a->severidad, "critica"\)' \
-    'solo una alerta crítica y accionable puede solicitar contención'
-exigir src/respuesta.c 'a->pid > 1.*a->pgid > 1' \
-    'PID 1 y PGID inválidos quedan excluidos'
-exigir src/respuesta.c 'a->pgid == pgid_autorizado.*a->uid == uid_laboratorio' \
-    'la política exige PGID y UID autorizados'
-exigir src/respuesta.c 'starttime_actual == a->starttime.*pgid_actual == a->pgid' \
-    'la identidad PID/starttime/PGID se revalida antes de actuar'
+exigir src/respuesta.c '!a->accionable' \
+    'las alertas no accionables son rechazadas'
+exigir src/respuesta.c 'strcmp\(a->severidad, "critica"\) != 0' \
+    'solo las alertas críticas pueden solicitar contención'
+exigir src/respuesta.c 'a->pid <= 1' \
+    'PID 1 y PID inválidos quedan excluidos'
+exigir src/respuesta.c 'a->pgid <= 1' \
+    'PGID inválidos quedan excluidos'
+exigir src/respuesta.c 'a->pgid != pgid_autorizado' \
+    'la política rechaza PGID no autorizado'
+exigir src/respuesta.c 'a->uid != uid_laboratorio' \
+    'la política rechaza UID no autorizado'
+exigir src/respuesta.c 'starttime_actual == a->starttime' \
+    'la identidad revalida starttime antes de actuar'
+exigir src/respuesta.c 'pgid_actual == a->pgid' \
+    'la identidad revalida PGID antes de actuar'
+exigir src/respuesta.c 'datos.st_uid == uid_laboratorio' \
+    'la identidad revalida UID antes de actuar'
 exigir src/respuesta.c 'kill\(-a->pgid, SIGTERM\)' \
     'la primera señal de contención es SIGTERM al grupo'
 exigir src/respuesta.c 'kill\(-a->pgid, SIGKILL\)' \
