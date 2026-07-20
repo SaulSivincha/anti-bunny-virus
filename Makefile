@@ -31,8 +31,12 @@ simuladores/simulador_archivo: simuladores/simulador_archivo.c
 tests/test_motor_deteccion: tests/test_motor_deteccion.c src/motor_deteccion.c
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_motor_deteccion.c src/motor_deteccion.c
 
-test: tests/test_motor_deteccion
+tests/test_respuesta: tests/test_respuesta.c src/respuesta.c
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_respuesta.c src/respuesta.c
+
+test: tests/test_motor_deteccion tests/test_respuesta
 	./tests/test_motor_deteccion
+	./tests/test_respuesta
 
 check-scripts:
 	bash -n $(SCRIPTS_VALIDACION)
@@ -52,6 +56,6 @@ help:
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(SIMULADORES) tests/test_motor_deteccion
+	rm -f $(OBJS) $(TARGET) $(SIMULADORES) tests/test_motor_deteccion tests/test_respuesta
 
 .PHONY: all clean test check check-scripts help
