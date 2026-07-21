@@ -28,12 +28,9 @@ int main(void) {
     /* Rutas y política de laboratorio pueden sobreescribirse con variables de entorno. */
     const char *log_env = getenv("ANTI_BUNNY_LOG");
     configurar_logger(log_env != NULL ? log_env : RUTA_LOG);
-    const char *pgid_env = getenv("ANTI_BUNNY_PGID");
     const char *modo_env = getenv("ANTI_BUNNY_MODE");
-    const char *pgid_file = getenv("ANTI_BUNNY_PGID_FILE");
     const char *modo = modo_env != NULL ? modo_env : MODO_RESPUESTA;
-    int pgid_laboratorio = pgid_env != NULL ? atoi(pgid_env) : -1;
-    configurar_laboratorio(USUARIO_LABORATORIO, pgid_laboratorio, pgid_file, SEGUNDOS_GRACIA_SIGTERM);
+    configurar_laboratorio(NULL, -1, NULL, SEGUNDOS_GRACIA_SIGTERM);
     printf("anti-bunny-virus iniciado en modo=%s\n", modo);
 
     /* Buffers estáticos reutilizados cada ciclo para no reservar memoria en heap. */

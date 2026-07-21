@@ -75,7 +75,7 @@ int detectar(ProcesoInfo *procesos, int n_procesos, RecursoInfo *recursos, int n
              float max_crecimiento) {
     int total = 0;
 
-    /* Reglas de proliferación de procesos (fork bomb controlada). */
+    /* Reglas de proliferación de procesos. */
     for (int i = 0; i < n_procesos; ++i) {
         int activo = procesos[i].hijos >= max_hijos || procesos[i].hijos >= max_hijos_nuevos ||
                      procesos[i].hijos_nuevos >= max_hijos_nuevos;

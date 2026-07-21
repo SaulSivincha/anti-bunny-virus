@@ -1,19 +1,16 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <assert.h>
-#include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "respuesta.h"
 
-/*
- * Lee el starttime real de un proceso desde /proc/<pid>/stat.
- * El campo starttime permite detectar reutilización de PID.
- */
 static unsigned long long obtener_starttime(pid_t pid) {
     char ruta[64];
     char linea[4096];
@@ -49,10 +46,6 @@ static unsigned long long obtener_starttime(pid_t pid) {
     return 0;
 }
 
-
-/*
- * Inicializa una alerta crítica y accionable.
- */
 static void preparar_alerta(
     Alerta *alerta,
     pid_t pid,
@@ -70,15 +63,10 @@ static void preparar_alerta(
 
     strcpy(alerta->severidad, "critica");
     strcpy(alerta->tipo, "procesos");
-    strcpy(alerta->descripcion, "prueba controlada de politica");
+    strcpy(alerta->descripcion, "prueba de contencion por alerta");
     strcpy(alerta->evidencia, "test_respuesta");
 }
 
-
-/*
- * Modo alerta:
- * responder() solo registra evidencia y nunca envía señales.
- */
 static void test_modo_alerta_no_termina_proceso(void) {
     pid_t hijo = fork();
 
@@ -102,20 +90,14 @@ static void test_modo_alerta_no_termina_proceso(void) {
 
     responder(&alerta, 1, "alerta");
 
-    /* El hijo debe continuar vivo. */
     assert(kill(hijo, 0) == 0);
 
-    /* Limpieza controlada del proceso creado por el test. */
     kill(hijo, SIGKILL);
     waitpid(hijo, NULL, 0);
 
     printf("OK: modo alerta no envia señales\n");
 }
 
-
-/*
- * Una alerta que no sea crítica nunca puede solicitar contención.
- */
 static void test_alerta_no_critica_no_actua(void) {
     Alerta alerta;
 
@@ -134,10 +116,6 @@ static void test_alerta_no_critica_no_actua(void) {
     printf("OK: alerta no critica rechazada\n");
 }
 
-
-/*
- * Una alerta marcada como no accionable debe rechazarse.
- */
 static void test_alerta_no_accionable(void) {
     Alerta alerta;
 
@@ -156,10 +134,24 @@ static void test_alerta_no_accionable(void) {
     printf("OK: alerta no accionable rechazada\n");
 }
 
+static void test_tipo_no_procesos_no_actua(void) {
+    Alerta alerta;
 
-/*
- * PID 1 queda explícitamente fuera del alcance de la contención.
- */
+    preparar_alerta(
+        &alerta,
+        getpid(),
+        getpgrp(),
+        (unsigned int)getuid(),
+        obtener_starttime(getpid())
+    );
+
+    strcpy(alerta.tipo, "recursos");
+
+    responder(&alerta, 1, "terminar_lab");
+
+    printf("OK: tipo no procesos rechazado\n");
+}
+
 static void test_pid_1_rechazado(void) {
     Alerta alerta;
 
@@ -176,10 +168,6 @@ static void test_pid_1_rechazado(void) {
     printf("OK: PID 1 rechazado\n");
 }
 
-
-/*
- * Un PGID <= 1 nunca es válido para la política.
- */
 static void test_pgid_invalido(void) {
     Alerta alerta;
 
@@ -196,88 +184,10 @@ static void test_pgid_invalido(void) {
     printf("OK: PGID invalido rechazado\n");
 }
 
-
-/*
- * Prueba explícita de otro PGID.
- *
- * Se configura como autorizado un PGID diferente del indicado
- * en la alerta. La política debe detenerse exactamente en
- * pgid_no_autorizado.
- */
-static void test_otro_pgid_rechazado(const char *usuario) {
+static void test_starttime_incorrecto(void) {
     Alerta alerta;
     pid_t pgid_real = getpgrp();
-
-    configurar_laboratorio(
-        usuario,
-        pgid_real + 10000,
-        NULL,
-        1
-    );
-
-    preparar_alerta(
-        &alerta,
-        getpid(),
-        pgid_real,
-        (unsigned int)getuid(),
-        obtener_starttime(getpid())
-    );
-
-    responder(&alerta, 1, "terminar_lab");
-
-    printf("OK: PGID no autorizado rechazado\n");
-}
-
-
-/*
- * Prueba explícita de UID incorrecto.
- *
- * Aquí el PGID sí coincide con el autorizado para permitir
- * que la validación alcance específicamente la comprobación UID.
- */
-static void test_uid_no_autorizado(const char *usuario) {
-    Alerta alerta;
-    pid_t pgid_real = getpgrp();
-
-    configurar_laboratorio(
-        usuario,
-        pgid_real,
-        NULL,
-        1
-    );
-
-    preparar_alerta(
-        &alerta,
-        getpid(),
-        pgid_real,
-        (unsigned int)getuid() + 1U,
-        obtener_starttime(getpid())
-    );
-
-    responder(&alerta, 1, "terminar_lab");
-
-    printf("OK: UID no autorizado rechazado\n");
-}
-
-
-/*
- * Prueba explícita de identidad/starttime incorrecto.
- *
- * PGID y UID son válidos. Se altera únicamente starttime,
- * simulando una identidad de proceso obsoleta o un PID reutilizado.
- */
-static void test_starttime_incorrecto(const char *usuario) {
-    Alerta alerta;
-    pid_t pgid_real = getpgrp();
-    unsigned long long starttime_real =
-        obtener_starttime(getpid());
-
-    configurar_laboratorio(
-        usuario,
-        pgid_real,
-        NULL,
-        1
-    );
+    unsigned long long starttime_real = obtener_starttime(getpid());
 
     preparar_alerta(
         &alerta,
@@ -292,23 +202,56 @@ static void test_starttime_incorrecto(const char *usuario) {
     printf("OK: starttime incorrecto rechazado\n");
 }
 
+static void test_contencion_termina_grupo_de_la_alerta(void) {
+    pid_t hijo = fork();
+
+    assert(hijo >= 0);
+
+    if (hijo == 0) {
+        setpgid(0, 0);
+        while (1) {
+            pause();
+        }
+    }
+
+    struct timespec espera = { .tv_sec = 0, .tv_nsec = 100000000L };
+    nanosleep(&espera, NULL);
+
+    pid_t pgid_hijo = getpgid(hijo);
+    assert(pgid_hijo > 1);
+
+    Alerta alerta;
+
+    preparar_alerta(
+        &alerta,
+        hijo,
+        pgid_hijo,
+        (unsigned int)getuid(),
+        obtener_starttime(hijo)
+    );
+
+    configurar_laboratorio(NULL, -1, NULL, 1);
+    responder(&alerta, 1, "terminar_lab");
+
+    int status = 0;
+    pid_t fin = waitpid(hijo, &status, 0);
+    assert(fin == hijo);
+    assert(WIFSIGNALED(status));
+
+    printf("OK: contencion termina el PGID de la alerta\n");
+}
 
 int main(void) {
-    struct passwd *cuenta = getpwuid(getuid());
-
-    assert(cuenta != NULL);
-
     configurar_logger("logs/test_respuesta.log");
 
     test_modo_alerta_no_termina_proceso();
     test_alerta_no_critica_no_actua();
     test_alerta_no_accionable();
+    test_tipo_no_procesos_no_actua();
     test_pid_1_rechazado();
     test_pgid_invalido();
-
-    test_otro_pgid_rechazado(cuenta->pw_name);
-    test_uid_no_autorizado(cuenta->pw_name);
-    test_starttime_incorrecto(cuenta->pw_name);
+    test_starttime_incorrecto();
+    test_contencion_termina_grupo_de_la_alerta();
 
     printf("test_respuesta: OK\n");
 

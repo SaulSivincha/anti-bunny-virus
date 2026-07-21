@@ -9,7 +9,6 @@
 #define INTERVALO_MONITOREO 0.25
 #define RUTA_LOG "logs/eventos.log"
 #define MODO_RESPUESTA "alerta"
-#define USUARIO_LABORATORIO "antibunny-test"
 
 #define MAX_HIJOS_POR_PROCESO 20
 #define MAX_MEMORIA_MB 256.0

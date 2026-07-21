@@ -1,5 +1,4 @@
 #include <errno.h>
-#include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,12 +11,8 @@
 #include "respuesta.h"
 
 static char ruta_archivo_log[512] = "logs/eventos.log";
-static unsigned int uid_laboratorio = (unsigned int)-1;
-static int pgid_autorizado = -1;
 static int segundos_gracia = 2;
-static char ruta_pgid_autorizado[512];
 
-/* Función para crear la carpeta padre del archivo de log si no existe. */
 static void asegurar_directorio_log(const char *ruta_log) {
     char directorio[512];
     char *barra;
@@ -32,7 +27,6 @@ static void asegurar_directorio_log(const char *ruta_log) {
     }
 }
 
-/* Función para formatear la marca de tiempo humana de cada evento. */
 static void marca(char salida[26]) {
     time_t ahora = time(NULL);
     struct tm *tm_info = localtime(&ahora);
@@ -40,7 +34,6 @@ static void marca(char salida[26]) {
     strftime(salida, 26, "%Y-%m-%d %H:%M:%S", tm_info);
 }
 
-/* Función para duplicar cada línea de log en consola y en disco. */
 static void escribir(FILE *archivo, const char *linea) {
     fputs(linea, stdout);
     if (archivo != NULL) {
@@ -48,7 +41,6 @@ static void escribir(FILE *archivo, const char *linea) {
     }
 }
 
-/* Función para fijar la ruta del log y registrar el arranque del monitor. */
 void configurar_logger(const char *ruta_log) {
     FILE *archivo;
     char tiempo[26];
@@ -64,62 +56,18 @@ void configurar_logger(const char *ruta_log) {
     }
 }
 
-/*
- * Función para cargar la política de laboratorio: usuario permitido,
- * PGID autorizado (fijo o leído de archivo) y segundos de gracia tras SIGTERM.
- */
 void configurar_laboratorio(
     const char *usuario,
     int pgid,
     const char *ruta_pgid,
     int gracia
 ) {
-    struct passwd *cuenta = getpwnam(usuario);
-
-    uid_laboratorio =
-        cuenta != NULL
-            ? (unsigned int)cuenta->pw_uid
-            : (unsigned int)-1;
-
-    pgid_autorizado = pgid;
-
-    if (ruta_pgid != NULL) {
-        snprintf(
-            ruta_pgid_autorizado,
-            sizeof(ruta_pgid_autorizado),
-            "%s",
-            ruta_pgid
-        );
-    }
-
+    (void)usuario;
+    (void)pgid;
+    (void)ruta_pgid;
     segundos_gracia = gracia > 0 ? gracia : 2;
 }
 
-/* Función para actualizar el PGID autorizado desde el fichero publicado por el simulador. */
-static void refrescar_pgid_autorizado(void) {
-    char linea[64];
-    FILE *archivo;
-
-    if (ruta_pgid_autorizado[0] == '\0') {
-        return;
-    }
-
-    archivo = fopen(ruta_pgid_autorizado, "r");
-    if (archivo == NULL) {
-        return;
-    }
-
-    if (fgets(linea, sizeof(linea), archivo) != NULL) {
-        int pgid = atoi(linea);
-        if (pgid > 1) {
-            pgid_autorizado = pgid;
-        }
-    }
-
-    fclose(archivo);
-}
-
-/* Función para leer el starttime actual desde /proc y detectar reutilización de PID. */
 static int leer_starttime_actual(int pid, unsigned long long *starttime) {
     char ruta[64];
     char linea[4096];
@@ -157,13 +105,7 @@ static int leer_starttime_actual(int pid, unsigned long long *starttime) {
     return -1;
 }
 
-/*
- * Función para comprobar que el proceso sigue siendo el mismo
- * (starttime, PGID y UID de laboratorio) antes de enviar señales.
- */
 static int identidad_actual_valida(const Alerta *a) {
-    char ruta[64];
-    struct stat datos;
     unsigned long long starttime_actual;
     pid_t pgid_actual;
 
@@ -171,22 +113,14 @@ static int identidad_actual_valida(const Alerta *a) {
         return 0;
     }
 
-    snprintf(ruta, sizeof(ruta), "/proc/%d", a->pid);
-    if (stat(ruta, &datos) != 0) {
+    pgid_actual = getpgid(a->pid);
+    if (pgid_actual < 0) {
         return 0;
     }
 
-    pgid_actual = getpgid(a->pid);
-
-    return starttime_actual == a->starttime &&
-           pgid_actual == a->pgid &&
-           datos.st_uid == uid_laboratorio;
+    return starttime_actual == a->starttime && pgid_actual == a->pgid;
 }
 
-/*
- * Función para decidir si una alerta crítica puede solicitar contención
- * en el entorno de laboratorio y explicar el motivo del rechazo.
- */
 static int puede_actuar(const Alerta *a, const char **motivo) {
     if (!a->accionable) {
         *motivo = "alerta_no_accionable";
@@ -196,20 +130,16 @@ static int puede_actuar(const Alerta *a, const char **motivo) {
         *motivo = "alerta_no_critica";
         return 0;
     }
+    if (strcmp(a->tipo, "procesos") != 0) {
+        *motivo = "tipo_no_contenible";
+        return 0;
+    }
     if (a->pid <= 1) {
         *motivo = "pid_invalido";
         return 0;
     }
     if (a->pgid <= 1) {
         *motivo = "pgid_invalido";
-        return 0;
-    }
-    if (a->pgid != pgid_autorizado) {
-        *motivo = "pgid_no_autorizado";
-        return 0;
-    }
-    if (a->uid != uid_laboratorio) {
-        *motivo = "uid_no_autorizado";
         return 0;
     }
     if (!identidad_actual_valida(a)) {
@@ -221,21 +151,15 @@ static int puede_actuar(const Alerta *a, const char **motivo) {
     return 1;
 }
 
-/*
- * Función para terminar el grupo autorizado: validar política, enviar SIGTERM,
- * esperar gracia, revalidar y usar SIGKILL solo si el grupo sigue activo.
- */
 static void terminar_grupo(FILE *archivo, const Alerta *a, const char *tiempo) {
     char linea[768];
     const char *motivo = NULL;
-
-    refrescar_pgid_autorizado();
 
     if (!puede_actuar(a, &motivo)) {
         snprintf(
             linea,
             sizeof(linea),
-            "%s INFO accion=denegada pid=%d pgid=%d politica=contencion_laboratorio "
+            "%s INFO accion=denegada pid=%d pgid=%d politica=contencion_por_alerta "
             "resultado=rechazado motivo=%s\n",
             tiempo,
             a->pid,
@@ -249,7 +173,7 @@ static void terminar_grupo(FILE *archivo, const Alerta *a, const char *tiempo) {
     snprintf(
         linea,
         sizeof(linea),
-        "%s INFO accion=autorizada pid=%d pgid=%d politica=contencion_laboratorio "
+        "%s INFO accion=autorizada pid=%d pgid=%d politica=contencion_por_alerta "
         "resultado=permitido\n",
         tiempo,
         a->pid,
@@ -319,10 +243,6 @@ static void terminar_grupo(FILE *archivo, const Alerta *a, const char *tiempo) {
     }
 }
 
-/*
- * Función para registrar cada alerta y, solo en modo terminar_lab,
- * intentar contención del grupo si la política lo autoriza.
- */
 void responder(Alerta *alertas, int n_alertas, const char *modo) {
     FILE *archivo = fopen(ruta_archivo_log, "a");
 
