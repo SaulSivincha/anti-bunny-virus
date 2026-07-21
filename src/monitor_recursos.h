@@ -1,11 +1,7 @@
-/*
- * Interfaz del monitor de recursos. Define las métricas de CPU y memoria de un
- * proceso y la operación que obtiene una muestra completa desde /proc.
- */
 #ifndef MONITOR_RECURSOS_H
 #define MONITOR_RECURSOS_H
 
-// Muestra de consumo asociada a una identidad PID-starttime.
+/* Consumo de CPU y memoria de un proceso en el intervalo de monitoreo. */
 typedef struct {
     int pid;
     unsigned long long starttime;
@@ -15,7 +11,6 @@ typedef struct {
     float delta_memoria_mb_s;
 } RecursoInfo;
 
-// Recolecta hasta max_procesos métricas y devuelve el número de muestras válidas.
 int obtener_recursos(RecursoInfo *lista, int max_procesos);
 
 #endif

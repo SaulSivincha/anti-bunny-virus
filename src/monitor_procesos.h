@@ -1,11 +1,7 @@
-/*
- * Interfaz del monitor de procesos. Define la muestra que describe la identidad
- * de un proceso y su proliferación, y expone la recolección desde /proc.
- */
 #ifndef MONITOR_PROCESOS_H
 #define MONITOR_PROCESOS_H
 
-// Muestra de identidad, propiedad y relación padre-hijo de un proceso.
+/* Datos de un proceso leídos desde /proc para detectar proliferación. */
 typedef struct {
     int pid;
     int ppid;
@@ -20,7 +16,6 @@ typedef struct {
     float hijos_nuevos_s;
 } ProcesoInfo;
 
-// Llena lista con hasta max_procesos muestras y devuelve cuántas fueron válidas.
 int obtener_procesos(ProcesoInfo *lista, int max_procesos);
 
 #endif

@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+/*
+ * Simulador de consumo gradual de memoria para probar alertas de recursos.
+ * Reserva bloques, los toca para forzar RSS y libera al finalizar.
+ */
 int main(void) {
     enum { BLOQUE_MB = 32, REPETICIONES = 10 };
     volatile unsigned char *bloques[REPETICIONES] = {0};

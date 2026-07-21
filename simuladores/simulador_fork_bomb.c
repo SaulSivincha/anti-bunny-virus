@@ -9,6 +9,7 @@
 /* Proliferación recursiva acotada: se usa solo para validar el monitor. */
 enum { LIMITE_PROCESOS = 64, RAMAS_POR_PROCESO = 8 };
 
+/* Función recursiva que crea hijos hasta un límite fijo y luego espera su fin. */
 static void proliferar(atomic_int *creados) {
     pid_t hijos[RAMAS_POR_PROCESO];
     int total_hijos = 0;
@@ -28,6 +29,7 @@ static void proliferar(atomic_int *creados) {
     for (int i = 0; i < total_hijos; ++i) waitpid(hijos[i], NULL, 0);
 }
 
+/* Punto de entrada: publica el PGID si se indica y lanza la proliferación acotada. */
 int main(void) {
     atomic_int *creados = mmap(NULL, sizeof(*creados), PROT_READ | PROT_WRITE,
                                MAP_SHARED | MAP_ANONYMOUS, -1, 0);

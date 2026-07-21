@@ -1,7 +1,3 @@
-/*
- * Recolector de procesos. Lee identidad y parentesco desde /proc, cuenta hijos
- * por PPID y compara muestras para estimar nuevos hijos y su tasa por segundo.
- */
 #include <ctype.h>
 #include <dirent.h>
 #include <limits.h>
@@ -15,9 +11,9 @@
 
 #include "monitor_procesos.h"
 
+/* Muestra guardada entre ciclos para calcular hijos nuevos y evitar confundir PIDs reutilizados. */
 #define MAX_HISTORIAL_PROCESOS 8192
 
-// Una muestra histórica distingue procesos aunque el sistema reutilice un PID.
 typedef struct {
     int pid;
     unsigned long long starttime;
@@ -29,12 +25,14 @@ static int total_historial;
 static struct timespec instante_anterior;
 static int hay_muestra_anterior;
 
+/* Función para comprobar si un nombre de entrada en /proc es numérico (PID). */
 static int es_pid(const char *nombre) {
     if (*nombre == '\0') return 0;
     for (; *nombre != '\0'; ++nombre) if (!isdigit((unsigned char)*nombre)) return 0;
     return 1;
 }
 
+/* Función para extraer pid, ppid, pgid y starttime desde una línea de /proc/pid/stat. */
 static int parsear_stat(char *linea, ProcesoInfo *proceso) {
     char *cierre = strrchr(linea, ')');
     char *guardar = NULL;
@@ -43,7 +41,6 @@ static int parsear_stat(char *linea, ProcesoInfo *proceso) {
     if (cierre == NULL || sscanf(linea, "%d (%255[^)])", &proceso->pid, proceso->nombre) != 2) return -1;
     token = strtok_r(cierre + 2, " ", &guardar);
     while (token != NULL) {
-        // Índices relativos al texto posterior al nombre entre paréntesis.
         if (indice == 1) proceso->ppid = atoi(token);
         else if (indice == 2) proceso->pgid = atoi(token);
         else if (indice == 19) proceso->starttime = strtoull(token, NULL, 10);
@@ -53,6 +50,7 @@ static int parsear_stat(char *linea, ProcesoInfo *proceso) {
     return indice > 19 ? 0 : -1;
 }
 
+/* Función para rellenar ProcesoInfo leyendo stat, propietario y ruta del ejecutable. */
 static int leer_proceso(int pid, ProcesoInfo *proceso) {
     char ruta_stat[PATH_MAX], ruta_exe[PATH_MAX], linea[4096];
     FILE *archivo;
@@ -61,7 +59,6 @@ static int leer_proceso(int pid, ProcesoInfo *proceso) {
     ssize_t longitud;
 
     memset(proceso, 0, sizeof(*proceso));
-    // stat aporta PID, nombre, PPID, PGID y tiempo de inicio.
     snprintf(ruta_stat, sizeof(ruta_stat), "/proc/%d/stat", pid);
     archivo = fopen(ruta_stat, "r");
     if (archivo == NULL || fgets(linea, sizeof(linea), archivo) == NULL) {
@@ -71,22 +68,25 @@ static int leer_proceso(int pid, ProcesoInfo *proceso) {
     fclose(archivo);
     if (parsear_stat(linea, proceso) != 0) return -1;
 
-    // Los metadatos del directorio permiten resolver UID y usuario.
     snprintf(ruta_stat, sizeof(ruta_stat), "/proc/%d", pid);
     if (stat(ruta_stat, &datos) == 0) {
         proceso->uid = (unsigned int)datos.st_uid;
         usuario = getpwuid(datos.st_uid);
-        snprintf(proceso->usuario, sizeof(proceso->usuario), "%s", usuario != NULL ? usuario->pw_name : "desconocido");
+        if (usuario != NULL) {
+            snprintf(proceso->usuario, sizeof(proceso->usuario), "%s", usuario->pw_name);
+        } else {
+            snprintf(proceso->usuario, sizeof(proceso->usuario), "desconocido");
+        }
     } else {
         snprintf(proceso->usuario, sizeof(proceso->usuario), "desconocido");
     }
-    // exe identifica el binario cuando el enlace todavía existe.
     snprintf(ruta_exe, sizeof(ruta_exe), "/proc/%d/exe", pid);
     longitud = readlink(ruta_exe, proceso->ruta, sizeof(proceso->ruta) - 1);
     if (longitud >= 0) proceso->ruta[longitud] = '\0';
     return 0;
 }
 
+/* Función para obtener el conteo de hijos del ciclo anterior del mismo proceso lógico. */
 static int hijos_previos(const ProcesoInfo *proceso) {
     for (int i = 0; i < total_historial; ++i)
         if (historial[i].pid == proceso->pid && historial[i].starttime == proceso->starttime)
@@ -94,6 +94,10 @@ static int hijos_previos(const ProcesoInfo *proceso) {
     return 0;
 }
 
+/*
+ * Función para listar procesos del sistema, contar hijos directos
+ * y estimar la tasa de creación de hijos entre sondeos.
+ */
 int obtener_procesos(ProcesoInfo *lista, int max_procesos) {
     DIR *proc = opendir("/proc");
     struct dirent *entrada;
@@ -102,7 +106,6 @@ int obtener_procesos(ProcesoInfo *lista, int max_procesos) {
     int total = 0;
 
     if (proc == NULL || lista == NULL || max_procesos <= 0) return 0;
-    // El reloj monotónico evita saltos causados por ajustes de la hora del sistema.
     clock_gettime(CLOCK_MONOTONIC, &ahora);
     if (hay_muestra_anterior) {
         transcurrido = (double)(ahora.tv_sec - instante_anterior.tv_sec) +
@@ -112,7 +115,7 @@ int obtener_procesos(ProcesoInfo *lista, int max_procesos) {
         if (es_pid(entrada->d_name) && leer_proceso(atoi(entrada->d_name), &lista[total]) == 0) ++total;
     }
     closedir(proc);
-    // Contar procesos cuyo PPID coincide con cada posible padre.
+    /* Cada proceso acumula cuántos PIDs tienen su pid como ppid. */
     for (int i = 0; i < total; ++i) {
         for (int j = 0; j < total; ++j) {
             if (lista[j].ppid == lista[i].pid) {
@@ -121,19 +124,24 @@ int obtener_procesos(ProcesoInfo *lista, int max_procesos) {
         }
         int previo = hay_muestra_anterior ? hijos_previos(&lista[i]) : lista[i].hijos;
         
-        // Una disminución de hijos no se interpreta como proliferación negativa.
-        lista[i].hijos_nuevos = lista[i].hijos > previo ? lista[i].hijos - previo : 0;
-        lista[i].hijos_nuevos_s = transcurrido > 0.0 ? (float)(lista[i].hijos_nuevos / transcurrido) : 0.0f;
+        if (lista[i].hijos > previo) {
+            lista[i].hijos_nuevos = lista[i].hijos - previo;
+        } else {
+            lista[i].hijos_nuevos = 0;
+        }
+        if (transcurrido > 0.0) {
+            lista[i].hijos_nuevos_s = (float)(lista[i].hijos_nuevos / transcurrido);
+        } else {
+            lista[i].hijos_nuevos_s = 0.0f;
+        }
     }
-    // Reemplazar el historial con la fotografía que acaba de finalizar.
+    /* Guardar instantánea para el próximo intervalo de monitoreo. */
     total_historial = 0;
     for (int i = 0; i < total && total_historial < MAX_HISTORIAL_PROCESOS; ++i) {
-        historial[total_historial] = (MuestraProceso){
-            .pid = lista[i].pid,
-            .starttime = lista[i].starttime,
-            .hijos = lista[i].hijos
-        };
-        ++total_historial;
+        historial[total_historial].pid = lista[i].pid;
+        historial[total_historial].starttime = lista[i].starttime;
+        historial[total_historial].hijos = lista[i].hijos;
+        total_historial++;
     }
 
     instante_anterior = ahora;

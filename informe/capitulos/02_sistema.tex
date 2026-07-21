@@ -8,6 +8,17 @@ registra o contiene la amenaza. Al iniciar configura el log, el modo de respuest
 y la autorización del laboratorio. Usa arreglos estáticos para un máximo de
 8192 procesos y recursos, 1024 archivos y 256 alertas por ciclo.
 
+\paragraph{Organización del código.}
+El repositorio separa recolectores (\texttt{monitor\_procesos},
+\texttt{monitor\_recursos}, \texttt{monitor\_archivos}), el motor
+(\texttt{motor\_deteccion}), la respuesta (\texttt{respuesta}) y el ciclo
+principal (\texttt{main.c}). La versión integrada desde \texttt{main} mantiene
+el mismo comportamiento evaluable, pero documenta en comentarios el propósito de
+cada función pública y de los pasos críticos (historial por
+\texttt{starttime}, persistencia, atribución y contención). Los simuladores en
+\texttt{simuladores/} incluyen la misma documentación breve sobre la carga que
+generan.
+
 \begin{figure}[htbp]
   \centering
   \fbox{\parbox{0.78\textwidth}{\centering
@@ -258,7 +269,10 @@ para cada archivo a:
 \paragraph{Registro y contención.}
 
 Cada alerta se escribe en la salida estándar y en \texttt{logs/eventos.log} con
-fecha, severidad, tipo, PID, PGID, tiempo de inicio, evidencia y modo.
+una línea \texttt{WARNING} que incluye fecha, severidad, tipo, PID, PGID,
+\texttt{starttime}, descripción, evidencia y modo. Las acciones de contención o
+denegación se registran como líneas \texttt{INFO} o \texttt{ERROR} con el mismo
+formato de campos clave--valor.
 
 El modo predeterminado \texttt{alerta} solo registra. En
 \texttt{terminar\_lab}, la alerta debe ser crítica y accionable; PID y PGID deben
@@ -266,13 +280,13 @@ ser mayores que uno; y PGID, UID y tiempo de inicio deben coincidir con
 \texttt{/proc} y la autorización. El Listado~\ref{lst:identidad} muestra la
 revalidación.
 
-\begin{lstlisting}[style=codigoC,caption={Revalidación de la identidad antes de contener.},label={lst:identidad}]
+\begin{lstlisting}[style=codigoC,caption={Revalidación de la identidad antes de contener (\texttt{respuesta.c}).},label={lst:identidad}]
 if (stat(ruta, &datos) != 0) return 0;
 pgid_actual = getpgid(a->pid);
 
 return starttime_actual == a->starttime &&
        pgid_actual == a->pgid &&
-       (unsigned int)datos.st_uid == uid_laboratorio;
+       datos.st_uid == uid_laboratorio;
 \end{lstlisting}
 
 Tras autorizar, envía \texttt{SIGTERM} al PGID y espera dos segundos. Si el grupo

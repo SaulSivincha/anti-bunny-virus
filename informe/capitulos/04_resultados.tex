@@ -2,13 +2,16 @@
 
 \section{Verificación del sistema}
 
-La ejecución de \texttt{make check} finalizó correctamente. Se compilaron el
-monitor y los tres simuladores, y las pruebas unitarias de detección y respuesta
-informaron \texttt{OK}. También se validó la sintaxis de los scripts y la
-política de contención: el modo predeterminado no envía señales, las alertas no
-críticas o no accionables se rechazan, PID~1 queda excluido y la identidad se
-revalida antes de una respuesta. Esta verificación confirma el funcionamiento
-esperado del código, pero no sustituye las mediciones experimentales en las VM.
+La ejecución de \texttt{make check} finalizó correctamente sobre la versión
+integrada desde \texttt{main}. Se compilaron el monitor y los tres simuladores.
+\texttt{tests/test\_motor\_deteccion} validó persistencia, escalamiento a
+crítica y correlación de archivos; \texttt{tests/test\_respuesta} comprobó que
+el modo \texttt{alerta} no envía señales y que \texttt{terminar\_lab} rechaza
+alertas no críticas, PID~1, PGID inválidos, PGID no autorizado, UID incorrecto e
+identidad obsoleta (\texttt{starttime}). También se validó la sintaxis de los
+scripts y la política estática de contención en \texttt{respuesta.c}. Esta
+verificación confirma el funcionamiento esperado del código refactorizado, pero
+no sustituye las mediciones experimentales en las VM.
 
 Las capturas registraron líneas base de 106 y 104 procesos, con 24,28\% y
 23,86\% de RAM, respectivamente. No se dispone de una corrida independiente de

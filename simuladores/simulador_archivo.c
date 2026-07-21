@@ -5,6 +5,10 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/*
+ * Simulador de crecimiento de fichero en el directorio vigilado por el monitor.
+ * Escribe bloques periódicos para generar bytes/s detectables.
+ */
 int main(void) {
     const char *directorio = "/tmp/anti_bunny_demo";
     const char *destino = "/tmp/anti_bunny_demo/archivo_crecimiento_demo.bin";
