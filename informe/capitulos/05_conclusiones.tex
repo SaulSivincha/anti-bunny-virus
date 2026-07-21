@@ -1,0 +1,32 @@
+\chapter{Conclusiones}
+
+\begin{enumerate}
+  \item Sin protección, la corrida crítica alcanzó 619 procesos, 100\% de CPU
+        y 73\% de RAM.
+  \item Anti-Bunny Virus detectó siete PID y escaló sus alertas de sospechosas
+        a críticas tras dos ciclos, con un máximo de 30,78 hijos/s.
+  \item Las pruebas automatizadas confirmaron el rechazo de objetivos no
+        autorizados y de identidades inválidas.
+  \item La hipótesis quedó parcialmente respaldada: se validó la detección,
+        pero no la contención experimental, la recuperación ni la sobrecarga.
+\end{enumerate}
+
+\section{Cumplimiento de objetivos}
+
+\begin{table}[H]
+  \centering
+  \caption{Cumplimiento de los objetivos del proyecto.}
+  \label{tab:cumplimiento-objetivos}
+  \small
+  \begin{tabular}{p{0.13\textwidth}p{0.18\textwidth}p{0.57\textwidth}}
+    \toprule
+    Objetivo & Estado & Evidencia \\
+    \midrule
+    General & Parcial & Prototipo implementado y detección de procesos demostrada; faltan pruebas experimentales de memoria, archivos y contención. \\
+    OE1 & Parcial & El sistema recolecta PID, PPID, PGID, CPU, RSS y archivos; la evidencia entregada solo valida procesos. \\
+    OE2 & Parcial & Siete PID escalaron de sospechosos a críticos tras dos ciclos, con máximo de 30,78 hijos/s. \\
+    OE3 & Parcial & Las pruebas automatizadas validaron los rechazos de seguridad; no se registró terminación real de un PGID autorizado. \\
+    OE4 & Parcial & Se documentaron dos corridas sin monitor y una con detección; faltan condiciones equivalentes, tres repeticiones, contención y sobrecarga. \\
+    \bottomrule
+  \end{tabular}
+\end{table}

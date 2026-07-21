@@ -15,3 +15,18 @@ simuladores/simulador_fork_bomb
 simuladores/simulador_memoria
 simuladores/simulador_archivo
 tests/test_motor_deteccion
+
+# Artefactos de compilación del informe LaTeX
+informe/*.aux
+informe/*.bbl
+informe/*.bcf
+informe/*.blg
+informe/*.fdb_latexmk
+informe/*.fls
+informe/*.lof
+informe/*.log
+informe/*.lot
+informe/*.out
+informe/*.pdf
+informe/*.run.xml
+informe/*.toc

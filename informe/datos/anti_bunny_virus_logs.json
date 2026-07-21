@@ -1,0 +1,296 @@
+[
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12480,
+    "pgid": 12480,
+    "starttime": 2736936,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12480,
+      "ppid": 12472,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12481,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12481,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12482,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12482,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12483,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12483,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12484,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12484,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12485,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12485,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:05",
+    "log_level": "WARNING",
+    "severidad": "sospechosa",
+    "tipo": "procesos",
+    "pid": 12486,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos observada",
+    "evidencia": {
+      "pid": 12486,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 8,
+      "tasa_hijos_s": 30.78,
+      "ciclos": 1
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12480,
+    "pgid": 12480,
+    "starttime": 2736936,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12480,
+      "ppid": 12472,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12481,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12481,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12482,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12482,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12483,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12483,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12484,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12484,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12485,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12485,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  },
+  {
+    "timestamp": "2026-07-20 07:57:06",
+    "log_level": "WARNING",
+    "severidad": "critica",
+    "tipo": "procesos",
+    "pid": 12486,
+    "pgid": 12480,
+    "starttime": 2736937,
+    "descripcion": "Proliferacion de procesos persistente",
+    "evidencia": {
+      "pid": 12486,
+      "ppid": 12480,
+      "pgid": 12480,
+      "usuario": "antibunny-test",
+      "hijos": 8,
+      "nuevos": 0,
+      "tasa_hijos_s": 0.0,
+      "ciclos": 2
+    },
+    "modo": "alerta"
+  }
+]

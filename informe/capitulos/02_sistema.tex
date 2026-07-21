@@ -1,0 +1,373 @@
+\chapter{Sistema anti-bunny-virus}
+
+\section{Arquitectura y funcionamiento general}
+
+\emph{Anti-bunny-virus} es un monitor de espacio de usuario. Cada 0,25 s obtiene
+procesos y recursos desde \texttt{/proc}, mide un directorio, evalúa reglas y
+registra o contiene la amenaza. Al iniciar configura el log, el modo de respuesta
+y la autorización del laboratorio. Usa arreglos estáticos para un máximo de
+8192 procesos y recursos, 1024 archivos y 256 alertas por ciclo.
+
+\paragraph{Organización del código.}
+El repositorio separa recolectores (\texttt{monitor\_procesos},
+\texttt{monitor\_recursos}, \texttt{monitor\_archivos}), el motor
+(\texttt{motor\_deteccion}), la respuesta (\texttt{respuesta}) y el ciclo
+principal (\texttt{main.c}). La versión integrada desde \texttt{main} mantiene
+el mismo comportamiento evaluable, pero documenta en comentarios el propósito de
+cada función pública y de los pasos críticos (historial por
+\texttt{starttime}, persistencia, atribución y contención). Los simuladores en
+\texttt{simuladores/} incluyen la misma documentación breve sobre la carga que
+generan.
+
+\begin{figure}[htbp]
+  \centering
+  \fbox{\parbox{0.78\textwidth}{\centering
+    Recolección de procesos, CPU/RSS y archivos}}
+  \par\smallskip$\Downarrow$\par\smallskip
+  \fbox{\parbox{0.78\textwidth}{\centering
+    Historial por PID--\texttt{starttime} y por ruta}}
+  \par\smallskip$\Downarrow$\par\smallskip
+  \fbox{\parbox{0.78\textwidth}{\centering
+    Tasas temporales, umbrales y persistencia}}
+  \par\smallskip$\Downarrow$\par\smallskip
+  \fbox{\parbox{0.78\textwidth}{\centering
+    Alerta con severidad, identidad y evidencia}}
+  \par\smallskip$\Downarrow$\par\smallskip
+  \fbox{\parbox{0.78\textwidth}{\centering
+    Registro o contención del grupo autorizado}}
+  \caption{Flujo principal del sistema anti-bunny-virus.}
+  \label{fig:flujo-sistema}
+\end{figure}
+
+El Listado~\ref{alg:ciclo-principal} resume \texttt{main.c}. Todas las alertas
+se registran; las señales solo se envían bajo la política de la
+Sección~\ref{sec:deteccion-respuesta}.
+
+\Needspace{18\baselineskip}
+\begin{lstlisting}[style=pseudocodigo,caption={Funcionamiento general de anti-bunny-virus.},label={alg:ciclo-principal}]
+configurar log, modo y autorizacion de laboratorio
+instalar manejador de SIGINT
+inicializar historiales de procesos, recursos y archivos
+
+mientras la ejecucion siga activa:
+    procesos <- recolectar procesos desde /proc
+    recursos <- recolectar CPU y RSS desde /proc
+    archivos <- medir archivos del directorio vigilado
+
+    comparar cada muestra con su historial
+    calcular hijos nuevos y CPU
+    calcular crecimiento_RAM en MB/s
+    calcular crecimiento_archivo en MB/s
+
+    si existen archivos:
+        mayor <- archivo con mayor crecimiento_archivo
+        si crecimiento_archivo(mayor) > 0:
+            atribuir mayor a un proceso, si es posible
+
+    alertas <- detectar(procesos, recursos, archivos)
+    registrar y responder(alertas, modo)
+    actualizar historiales
+    esperar 0.25 segundos
+\end{lstlisting}
+
+\section{Monitorización y extracción de métricas}
+
+\paragraph{Procesos.}
+
+\texttt{monitor\_procesos} recorre los PID de \texttt{/proc} y obtiene los datos
+de la Tabla~\ref{tab:campos-proceso}. Si un proceso termina durante la lectura,
+descarta esa muestra.
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Datos recolectados para cada proceso.}
+  \label{tab:campos-proceso}
+  \begin{tabular}{p{0.22\textwidth}p{0.31\textwidth}p{0.36\textwidth}}
+    \toprule
+    \textbf{Dato} & \textbf{Fuente} & \textbf{Uso} \\
+    \midrule
+    PID, PPID y PGID & \texttt{/proc/[pid]/stat} & Identidad, relación padre--hijo y grupo de contención. \\
+    Tiempo de inicio & \texttt{/proc/[pid]/stat} & Diferencia procesos que reutilizan el mismo PID. \\
+    UID y usuario & Metadatos de \texttt{/proc/[pid]} & Verifica el propietario autorizado. \\
+    Nombre y ejecutable & \texttt{stat} y \texttt{exe} & Describe la evidencia de la alerta. \\
+    Hijos & Comparación de PPID & Detecta proliferación por proceso padre. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+El módulo cuenta los hijos por PPID. El historial identifica cada proceso por
+PID y tiempo de inicio para evitar confusiones si el PID se reutiliza. Los hijos
+nuevos y su tasa son
+
+\begin{equation}
+  H_{\mathrm{nuevos}}(p,t)=\max(0,H(p,t)-H(p,t-1)),
+\end{equation}
+
+\begin{equation}
+  R_H(p,t)=\frac{H_{\mathrm{nuevos}}(p,t)}{\Delta t},
+\end{equation}
+
+donde $\Delta t$ proviene de un reloj monotónico. El historial se actualiza al
+final de cada ciclo.
+
+\paragraph{CPU y memoria.}
+
+\texttt{monitor\_recursos} lee los ticks de CPU de
+\texttt{/proc/[pid]/stat} y la memoria residente \texttt{VmRSS} de
+\texttt{/proc/[pid]/status}. También identifica el historial mediante PID y
+tiempo de inicio.
+
+Sea $C_t$ la suma de ticks de CPU en la muestra actual, $f$ la frecuencia de
+ticks del sistema y $M_t$ la memoria residente en MB. Las métricas implementadas
+son
+
+\begin{equation}
+  \mathrm{CPU}(t)=\frac{(C_t-C_{t-1})/f}{\Delta t}\times 100,
+\end{equation}
+
+\begin{equation}
+  \Delta\mathrm{RSS}(t)=\frac{M_t-M_{t-1}}{\Delta t}.
+\end{equation}
+
+La primera muestra produce tasas iguales a cero. La CPU calculada corresponde
+al proceso durante el intervalo, no a la carga global de la máquina virtual.
+
+\paragraph{Archivos y atribución.}
+
+El monitor recorre \path{/tmp/anti_bunny_demo} y conserva el tamaño de cada
+ruta. Si $S_t$ es el tamaño actual e $I$ el intervalo, calcula
+
+\begin{equation}
+  R_A(t)=\frac{\max(0,S_t-S_{t-1})}{1024^2 I}\quad\mathrm{MB/s}.
+\end{equation}
+
+Una disminución o una ruta nueva produce tasa cero. En cada ciclo solo se intenta
+atribuir el archivo de mayor crecimiento.
+
+La atribución compara la ruta con los enlaces de \texttt{/proc/[pid]/fd}, como
+muestra el Listado~\ref{lst:atribucion}. Conserva el primer PID y PGID
+coincidente. Sin coincidencia puede existir alerta, pero no contención.
+
+\begin{lstlisting}[style=codigoC,caption={Comparación usada para atribuir un archivo abierto.},label={lst:atribucion}]
+longitud = readlink(ruta_fd, enlace, sizeof(enlace) - 1);
+if (longitud < 0) continue;
+enlace[longitud] = '\0';
+if (strcmp(enlace, archivo->ruta) == 0) {
+    archivo->pid_escritor = procesos[i].pid;
+    archivo->pgid_escritor = procesos[i].pgid;
+    archivo->atribuido = 1;
+    closedir(fds);
+    return;
+}
+\end{lstlisting}
+
+La atribución solo identifica archivos abiertos durante el sondeo; no constituye
+evidencia forense de una escritura concreta.
+
+\section{Detección y respuesta}
+\label{sec:deteccion-respuesta}
+
+\paragraph{Motor de detección.}
+
+El motor identifica cada estado por tipo, PID y tiempo de inicio. Cuenta ciclos
+anómalos y solo emite otra alerta si aumenta la severidad; al normalizarse,
+reinicia el estado. La Tabla~\ref{tab:umbrales} contiene los umbrales.
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Parámetros de detección configurados.}
+  \label{tab:umbrales}
+  \begin{tabular}{p{0.43\textwidth}p{0.18\textwidth}p{0.24\textwidth}}
+    \toprule
+    \textbf{Parámetro} & \textbf{Valor} & \textbf{Aplicación} \\
+    \midrule
+    Intervalo de monitorización & 0,25 s & Todos los recolectores. \\
+    Hijos por proceso & 20 & Regla de proliferación. \\
+    Hijos totales o nuevos por ventana & 8 & Inicio temprano de proliferación. \\
+    Persistencia crítica & 2 ciclos & Procesos, recursos y archivos. \\
+    Memoria residente & 256 MB & Regla de recursos. \\
+    Crecimiento de RSS & 32 MB/s & Regla de recursos y correlación. \\
+    CPU del proceso & 80\% & Regla de recursos y correlación. \\
+    Crecimiento de archivo & 5 MB/s & Regla de archivos. \\
+    Gracia de terminación & 2 s & Escalamiento de señales. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Los dos umbrales expresados en MB/s miden objetos distintos:
+\emph{crecimiento de RSS} es el aumento de RAM ocupada por un proceso, mientras
+que \emph{crecimiento de archivo} es el aumento de una ruta en disco.
+
+La proliferación genera una alerta sospechosa y pasa a crítica y accionable tras
+dos ciclos o al alcanzar 40 hijos. CPU, RSS y archivos solo generan alertas no
+accionables. Una alerta de archivo puede ser crítica si su escritor también
+supera CPU o crecimiento de RSS. Por tanto, solo la proliferación puede activar
+contención.
+
+El Listado~\ref{lst:regla-procesos} muestra la regla de proliferación en C.
+
+\Needspace{13\baselineskip}
+\begin{lstlisting}[style=codigoC,caption={Clasificación de la proliferación de procesos.},label={lst:regla-procesos}]
+int activo = procesos[i].hijos >= max_hijos ||
+             procesos[i].hijos >= max_hijos_nuevos ||
+             procesos[i].hijos_nuevos >= max_hijos_nuevos;
+
+int critica = ciclos >= ciclos_persistencia ||
+              procesos[i].hijos >= max_hijos * 2;
+
+agregar(alertas_out, &total, max_alertas,
+        procesos[i].pid, procesos[i].pgid,
+        procesos[i].starttime, procesos[i].uid,
+        critica, critica ? "critica" : "sospechosa",
+        "procesos",
+        critica ? "Proliferacion de procesos persistente"
+                : "Proliferacion de procesos observada",
+        evidencia);
+\end{lstlisting}
+
+\Needspace{32\baselineskip}
+El Listado~\ref{alg:deteccion} resume las tres reglas con nombres explícitos
+para RAM y archivos.
+
+\begin{lstlisting}[style=pseudocodigo,caption={Motor de detección y clasificación.},label={alg:deteccion}]
+para cada proceso p:
+    si hijos_totales(p) >= 8 o hijos_nuevos(p) >= 8:
+        aumentar ciclos_anomalos(p)
+        si ciclos_anomalos(p) >= 2 o hijos_totales(p) >= 40:
+            emitir alerta CRITICA y ACCIONABLE
+        si no:
+            emitir alerta SOSPECHOSA y NO ACCIONABLE
+    si no:
+        reiniciar ciclos_anomalos(p)
+
+para cada recurso r:
+    RAM_actual <- RSS(r) en MB
+    crecimiento_RAM <- cambio de RSS por segundo
+    si CPU(r) > 80 o RAM_actual > 256
+       o crecimiento_RAM > 32 MB/s:
+        aumentar ciclos_anomalos(r)
+        si ciclos_anomalos(r) >= 2:
+            emitir alerta SOSPECHOSA y NO ACCIONABLE
+    si no:
+        reiniciar ciclos_anomalos(r)
+
+para cada archivo a:
+    crecimiento_archivo <- cambio de tamano por segundo
+    si crecimiento_archivo > 5 MB/s:
+        aumentar ciclos_anomalos(a)
+        si ciclos_anomalos(a) >= 2:
+            si el escritor supera CPU o crecimiento_RAM:
+                emitir alerta CRITICA y NO ACCIONABLE
+            si no:
+                emitir alerta SOSPECHOSA y NO ACCIONABLE
+    si no:
+        reiniciar ciclos_anomalos(a)
+\end{lstlisting}
+
+\paragraph{Registro y contención.}
+
+Cada alerta se escribe en la salida estándar y en \texttt{logs/eventos.log} con
+una línea \texttt{WARNING} que incluye fecha, severidad, tipo, PID, PGID,
+\texttt{starttime}, descripción, evidencia y modo. Las acciones de contención o
+denegación se registran como líneas \texttt{INFO} o \texttt{ERROR} con el mismo
+formato de campos clave--valor.
+
+El modo predeterminado \texttt{alerta} solo registra. En
+\texttt{terminar\_lab}, la alerta debe ser crítica y accionable; PID y PGID deben
+ser mayores que uno; y PGID, UID y tiempo de inicio deben coincidir con
+\texttt{/proc} y la autorización. El Listado~\ref{lst:identidad} muestra la
+revalidación.
+
+\begin{lstlisting}[style=codigoC,caption={Revalidación de la identidad antes de contener (\texttt{respuesta.c}).},label={lst:identidad}]
+if (stat(ruta, &datos) != 0) return 0;
+pgid_actual = getpgid(a->pid);
+
+return starttime_actual == a->starttime &&
+       pgid_actual == a->pgid &&
+       datos.st_uid == uid_laboratorio;
+\end{lstlisting}
+
+Tras autorizar, envía \texttt{SIGTERM} al PGID y espera dos segundos. Si el grupo
+sigue activo y supera una nueva validación, envía \texttt{SIGKILL}. Toda acción
+o denegación queda registrada.
+
+El Listado~\ref{alg:contencion} resume esta secuencia.
+
+\Needspace{16\baselineskip}
+\begin{lstlisting}[style=pseudocodigo,caption={Contención gradual del grupo autorizado.},label={alg:contencion}]
+para cada alerta:
+    escribir alerta y evidencia en el log
+
+    si modo != terminar_lab:
+        continuar
+    si alerta no es critica o no es accionable:
+        registrar denegacion y continuar
+    si PID, PGID, UID o starttime no coinciden:
+        registrar denegacion y continuar
+
+    enviar SIGTERM al grupo autorizado
+    esperar 2 segundos
+    comprobar que el grupo siga activo
+    revalidar PGID, UID y starttime
+    si continua activo y autorizado:
+        enviar SIGKILL al mismo grupo
+\end{lstlisting}
+
+\Needspace{22\baselineskip}
+\section{Simuladores y ejecución controlada}
+
+\paragraph{Configuración y ejecución.}
+
+Los umbrales están en \texttt{src/config.h}. El modo y la ruta del log admiten
+variables de entorno. El Listado~\ref{lst:ejecucion-local} muestra la ejecución
+local.
+
+\begin{lstlisting}[style=comandos,caption={Compilación y ejecución local en modo de alerta.},label={lst:ejecucion-local}]
+make check
+
+# Terminal 1: solo registra; no envia senales
+ANTI_BUNNY_MODE=alerta ./anti-bunny-virus
+
+# Terminal 2: ejecutar un solo simulador por corrida
+./simuladores/simulador_fork_bomb
+./simuladores/simulador_memoria
+./simuladores/simulador_archivo
+\end{lstlisting}
+
+\paragraph{Simuladores incluidos.}
+
+Debe ejecutarse un simulador por corrida y solo dentro de la máquina virtual. La
+Tabla~\ref{tab:simuladores} resume la carga y el resultado esperado.
+
+\begin{table}[H]
+  \centering
+  \small
+  \caption{Simuladores controlados del repositorio.}
+  \label{tab:simuladores}
+  \begin{tabular}{p{0.17\textwidth}p{0.32\textwidth}p{0.39\textwidth}}
+    \toprule
+    \textbf{Simulador} & \textbf{Carga ejecutada} & \textbf{Resultado esperado} \\
+    \midrule
+    Procesos & Hasta 64 procesos; ocho hijos por proceso; permanencia de 5 s. & Alerta de proliferación; crítica y accionable al persistir. \\
+    Memoria & Diez asignaciones de 32 MB; máximo nominal de 320 MB. & Alerta sospechosa por RSS o crecimiento de memoria. \\
+    Archivo & Ocho escrituras de 2 MB cada 0,2 s; total de 16 MB. & Alerta por crecimiento; incluye ruta y escritor si se atribuye. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Solo el simulador de procesos puede activar contención. systemd lo aísla con
+\texttt{setsid}, publica su PGID y limita el servicio a 256 PID. Tras instalar
+\texttt{deploy/}, se ejecuta como indica el
+Listado~\ref{lst:ejecucion-protegida}.
+
+\begin{lstlisting}[style=comandos,caption={Ejecución del escenario protegido con systemd.},label={lst:ejecucion-protegida}]
+sudo systemctl start anti-bunny-virus.service
+sudo systemctl start anti-bunny-attack.service
+sudo journalctl -u anti-bunny-virus.service -f
+\end{lstlisting}
+
+Memoria y archivo solo validan detección; no solicitan terminación. El simulador
+de archivo escribe \path{/tmp/anti_bunny_demo/archivo_crecimiento_demo.bin}.
+Los tres simuladores son acotados.
