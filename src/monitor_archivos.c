@@ -7,6 +7,7 @@
 
 #include "monitor_archivos.h"
 
+/* Tamaños vistos en el ciclo anterior para estimar bytes por segundo. */
 #define MAX_ESTADOS_ARCHIVO 1024
 
 typedef struct {
@@ -17,6 +18,7 @@ typedef struct {
 static EstadoArchivo estados[MAX_ESTADOS_ARCHIVO];
 static int total_estados;
 
+/* Función para obtener el tamaño registrado en el sondeo previo de una ruta. */
 static long long tamano_anterior(const char *ruta, long long actual) {
     for (int i = 0; i < total_estados; ++i) {
         if (strcmp(estados[i].ruta, ruta) == 0) return estados[i].tamano;
@@ -24,6 +26,7 @@ static long long tamano_anterior(const char *ruta, long long actual) {
     return actual;
 }
 
+/* Función para actualizar el historial de tamaños tras cada lectura. */
 static void recordar_archivo(const char *ruta, long long tamano) {
     for (int i = 0; i < total_estados; ++i) {
         if (strcmp(estados[i].ruta, ruta) == 0) {
@@ -38,6 +41,7 @@ static void recordar_archivo(const char *ruta, long long tamano) {
     }
 }
 
+/* Función recursiva para registrar ficheros regulares bajo el directorio vigilado. */
 static void escanear_directorio(const char *directorio, float intervalo,
                                 ArchivoInfo *lista, int max_archivos, int *total) {
     DIR *dir = opendir(directorio);
@@ -61,9 +65,12 @@ static void escanear_directorio(const char *directorio, float intervalo,
             archivo->pid_escritor = -1;
             archivo->pgid_escritor = -1;
             archivo->atribuido = 0;
-            archivo->crecimiento_mb_s = intervalo > 0.0f && archivo->tamano_bytes > anterior
-                ? (float)(archivo->tamano_bytes - anterior) / (1024.0f * 1024.0f * intervalo)
-                : 0.0f;
+            if (intervalo > 0.0f && archivo->tamano_bytes > anterior) {
+                archivo->crecimiento_mb_s =
+                    (float)(archivo->tamano_bytes - anterior) / (1024.0f * 1024.0f * intervalo);
+            } else {
+                archivo->crecimiento_mb_s = 0.0f;
+            }
             recordar_archivo(ruta, archivo->tamano_bytes);
             ++*total;
         }
@@ -71,6 +78,10 @@ static void escanear_directorio(const char *directorio, float intervalo,
     closedir(dir);
 }
 
+/*
+ * Función para localizar qué proceso tiene abierto el fichero
+ * comparando rutas resueltas en /proc/pid/fd.
+ */
 void atribuir_archivo(ArchivoInfo *archivo, const ProcesoInfo *procesos, int n_procesos) {
     if (archivo == NULL || procesos == NULL) return;
     for (int i = 0; i < n_procesos; ++i) {
@@ -100,6 +111,7 @@ void atribuir_archivo(ArchivoInfo *archivo, const ProcesoInfo *procesos, int n_p
     }
 }
 
+/* Función pública: prepara el directorio de demo y devuelve la lista de archivos vigilados. */
 int escanear_archivos(const char *directorio, float intervalo,
                       ArchivoInfo *lista, int max_archivos) {
     int total = 0;

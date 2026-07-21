@@ -6,6 +6,7 @@
 
 #include "monitor_procesos.h"
 
+/* Estado de un fichero vigilado y, si se conoce, el proceso que lo tiene abierto. */
 typedef struct {
     char ruta[PATH_MAX];
     long long tamano_bytes;

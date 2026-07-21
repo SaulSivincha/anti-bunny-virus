@@ -9,6 +9,7 @@
 
 #include "monitor_recursos.h"
 
+/* Historial de CPU y RSS entre ciclos para calcular tasas por segundo. */
 #define MAX_HISTORIAL_RECURSOS 8192
 typedef struct { int pid; unsigned long long starttime, ticks; float memoria_mb; } MuestraAnterior;
 static MuestraAnterior historial[MAX_HISTORIAL_RECURSOS];
@@ -17,10 +18,13 @@ static struct timespec instante_anterior;
 static int hay_muestra_anterior;
 
 static int es_pid(const char *n) { if (*n == '\0') return 0; for (; *n; ++n) if (!isdigit((unsigned char)*n)) return 0; return 1; }
+
+/* Función para buscar la muestra previa de un proceso identificado por pid y starttime. */
 static const MuestraAnterior *previo(int pid, unsigned long long starttime) {
     for (int i = 0; i < total_historial; ++i) if (historial[i].pid == pid && historial[i].starttime == starttime) return &historial[i];
     return NULL;
 }
+/* Función para leer ticks de CPU, starttime y memoria RSS de /proc/pid. */
 static int leer_recurso(int pid, RecursoInfo *recurso, unsigned long long *ticks) {
     char ruta[PATH_MAX], linea[4096], *cierre, *guardar = NULL, *token;
     FILE *archivo; int indice = 0; long rss_kb = 0;
@@ -36,6 +40,10 @@ static int leer_recurso(int pid, RecursoInfo *recurso, unsigned long long *ticks
     while (fgets(linea, sizeof(linea), archivo) != NULL) { if (sscanf(linea, "Name: %255s", recurso->nombre) == 1) continue; if (sscanf(linea, "VmRSS: %ld kB", &rss_kb) == 1) break; }
     fclose(archivo); recurso->pid = pid; recurso->memoria_mb = (float)rss_kb / 1024.0f; return 0;
 }
+/*
+ * Función para recorrer /proc y calcular porcentaje de CPU
+ * y velocidad de crecimiento de memoria respecto al ciclo anterior.
+ */
 int obtener_recursos(RecursoInfo *lista, int max_procesos) {
     DIR *proc = opendir("/proc");
     struct dirent *entrada;

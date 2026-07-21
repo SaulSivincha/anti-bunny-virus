@@ -1,6 +1,7 @@
 #ifndef MONITOR_PROCESOS_H
 #define MONITOR_PROCESOS_H
 
+/* Datos de un proceso leídos desde /proc para detectar proliferación. */
 typedef struct {
     int pid;
     int ppid;

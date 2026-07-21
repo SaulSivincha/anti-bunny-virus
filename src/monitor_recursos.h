@@ -1,6 +1,7 @@
 #ifndef MONITOR_RECURSOS_H
 #define MONITOR_RECURSOS_H
 
+/* Consumo de CPU y memoria de un proceso en el intervalo de monitoreo. */
 typedef struct {
     int pid;
     unsigned long long starttime;

@@ -5,6 +5,7 @@
 #include "monitor_recursos.h"
 #include "monitor_archivos.h"
 
+/* Resultado del análisis: evidencia lista para log y posible contención. */
 typedef struct {
     int pid;
     int pgid;
