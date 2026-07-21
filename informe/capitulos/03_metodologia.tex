@@ -2,7 +2,7 @@
 
 \section{Entorno y escenarios}
 
-La evaluación se planteó como un experimento controlado con dos máquinas
+La evaluación se planteó con dos máquinas
 virtuales (VM) Linux aisladas en Google Cloud. En la VM de control se ejecutó
 la carga sin el monitor; en la VM protegida se mantuvo activo Anti-Bunny Virus.
 La unidad experimental es una corrida completa, desde la línea base hasta la
@@ -24,7 +24,7 @@ permiten comprobar esa equivalencia en todos los parámetros.
     VM protegida & \texttt{vm2-protegida}: arquitectura x86-64 y disco de origen de 25 GB. \\
     Snapshot protegido & \texttt{snap-limpio}, instantánea estándar de 937,58 MB. \\
     Recursos en terminal & Las capturas de ejecución muestran 1,9 GiB utilizables y 0 B de \emph{swap}. \\
-    Versión del software & Código de \texttt{main} (commit \texttt{a771cbc}), integrado en la rama del informe; verificado con \texttt{make check}. \\
+    Versión del software & Código de \texttt{main} en el commit \texttt{104f6c9}; verificado con \texttt{make check}. El refactor del monitor corresponde a \texttt{a771cbc}; los simuladores de procesos y archivos cambiaron después. \\
     Muestreo del monitor & Un ciclo cada 0,25 s. \\
     Condición de control & Monitor inactivo y ejecución de la carga de procesos. \\
     Condición protegida & Monitor activo; modo \texttt{alerta} en la evidencia JSON. \\
@@ -55,7 +55,10 @@ infirieron a partir de las Figuras~\ref{fig:vm1-configuracion} y
 \texttt{scripts/validacion/preparar\_corrida.sh} antes de las repeticiones
 finales. El diseño contempla tres repeticiones por condición. La evidencia
 disponible en este informe es preliminar: incluye dos corridas sin protección
-y una corrida con el monitor activo.
+y una corrida con el monitor activo. Las capturas y el JSON se obtuvieron antes
+de los cambios de los commits \texttt{ea9ace5} y \texttt{104f6c9}; por ello,
+son evidencia histórica de la detección, no una medición de los simuladores
+actuales.
 
 Los escenarios evaluables son línea base, proliferación de procesos, consumo
 gradual de memoria y crecimiento de archivo. Para la comparación principal se
@@ -101,6 +104,7 @@ mismo PID desde \texttt{sospechosa} a \texttt{critica} representa persistencia,
 no dos procesos diferentes.
 
 \section{Procedimiento y medidas de seguridad}
+\label{sec:procedimiento-seguridad}
 
 Cada corrida sigue el mismo procedimiento:
 
@@ -109,22 +113,33 @@ Cada corrida sigue el mismo procedimiento:
         kernel y commit.
   \item Ejecutar \texttt{make check}, limpiar los logs de la corrida anterior
         e iniciar el recolector del sistema.
-  \item Medir la línea base, registrar $t_0$ e iniciar una sola carga.
+  \item Medir la línea base y registrar $t_0$. Para procesos, iniciar la carga
+        solo mediante \texttt{anti-bunny-attack.service}; no ejecutar el binario
+        directamente, ya que no incorpora un límite propio de PID.
+  \item Para el escenario de archivo, configurar una VM desechable con cuota o
+        capacidad temporal menor que el espacio del anfitrión y detener la
+        corrida al alcanzar el límite experimental definido.
   \item En la VM protegida, iniciar primero Anti-Bunny Virus y comprobar el
-        modo de respuesta, el usuario y el PGID autorizado.
+        modo de respuesta (registro o contención).
   \item Registrar procesos, CPU, RAM, severidad, PID, PPID, PGID, ciclos y
         acciones hasta finalizar la carga y observar la recuperación.
   \item Copiar capturas y logs sin modificarlos, restaurar la VM y repetir el
         escenario tres veces.
 \end{enumerate}
 
-Las pruebas se limitan a VM aisladas, con consola disponible y usuario de
-laboratorio sin privilegios. La unidad protegida aplica
-\texttt{PIDsMax=256} como freno independiente. La contención solo puede
-habilitarse en modo \texttt{terminar\_lab}, para un PGID publicado y un usuario
-autorizado; en los demás casos el sistema únicamente alerta. No deben
-ejecutarse cargas ilimitadas en el equipo anfitrión. Si la VM deja de responder,
-se detiene la corrida desde el hipervisor y se restaura el snapshot.
+Las pruebas de carga destructiva se ejecutan en VM aisladas, con consola
+disponible y snapshot en el hipervisor. El simulador de procesos no tiene tope
+interno: sin Anti-Bunny Virus desplegado en modo de contención, una corrida puede
+agotar CPU, memoria y tabla de procesos hasta dejar la VM sin respuesta útil
+(Figura~\ref{fig:vm-muerta}). Por ello esas cargas no deben ejecutarse en el
+equipo anfitrión.
+
+Con el monitor desplegado y en modo de contención, tras una alerta crítica
+accionable de proliferación se envían señales al \texttt{PGID} registrado en la
+propia alerta. En modo \texttt{alerta} el sistema registra la detección pero no
+termina procesos. El simulador de archivo puede intentar escribir hasta 2\,GB y
+debe probarse en una VM con cuota de disco o espacio acotado. Si la VM deja de
+responder, se detiene la corrida desde el hipervisor y se restaura el snapshot.
 
 El análisis conserva por separado los datos crudos y los datos derivados. El
 archivo \texttt{informe/datos/anti\_bunny\_virus\_logs.json} es la fuente de la

@@ -2,21 +2,37 @@
 
 \section{Verificación del sistema}
 
-La ejecución de \texttt{make check} finalizó correctamente sobre la versión
-integrada desde \texttt{main}. Se compilaron el monitor y los tres simuladores.
-\texttt{tests/test\_motor\_deteccion} validó persistencia, escalamiento a
-crítica y correlación de archivos; \texttt{tests/test\_respuesta} comprobó que
-el modo \texttt{alerta} no envía señales y que \texttt{terminar\_lab} rechaza
-alertas no críticas, PID~1, PGID inválidos, PGID no autorizado, UID incorrecto e
-identidad obsoleta (\texttt{starttime}). También se validó la sintaxis de los
-scripts y la política estática de contención en \texttt{respuesta.c}. Esta
-verificación confirma el funcionamiento esperado del código refactorizado, pero
-no sustituye las mediciones experimentales en las VM.
+La ejecución de \texttt{make check} finalizó correctamente sobre el commit
+\texttt{104f6c9} de \texttt{main}. El objetivo compiló el monitor y los tres
+simuladores. \texttt{tests/test\_motor\_deteccion} validó, con muestras
+sintéticas, persistencia, escalamiento a crítica y la emisión de alertas de
+recursos y archivos. \texttt{tests/test\_respuesta} comprobó que el modo \texttt{alerta} no envía
+señales y que el modo de contención rechaza alertas no críticas, PID~1, PGID
+inválidos e identidad obsoleta (\texttt{starttime}), además de registrar la
+terminación del \texttt{PGID} asociado a alertas críticas accionables. También se
+validó la sintaxis de los scripts y la política de contención en
+\texttt{respuesta.c}.
 
-Las capturas registraron líneas base de 106 y 104 procesos, con 24,28\% y
+Esta verificación no ejecuta los simuladores: confirma compilación y contratos
+unitarios, pero no mide su comportamiento bajo carga en VM. La contención del
+simulador de procesos actual y el impacto en disco del simulador de archivo se
+documentan en las corridas de VM del presente capítulo.
+
+Las capturas históricas registraron líneas base de 106 y 104 procesos, con 24,28\% y
 23,86\% de RAM, respectivamente. No se dispone de una corrida independiente de
 actividad normal con el monitor activo; por ello, no se calcula una tasa de
 falsos positivos ni la sobrecarga del monitor.
+
+\paragraph{Trazabilidad de la evidencia.}
+Las Figuras~\ref{fig:fork-p1-inicio}--\ref{fig:evolucion-hijos-json} y el JSON
+incluido en el repositorio corresponden a una versión previa de los simuladores:
+la evidencia de procesos muestra árboles con ocho hijos y la documentación de
+esa versión describía un máximo de 64 procesos. El código actual, en cambio, no
+limita internamente \texttt{simulador\_fork\_bomb} y cambió
+\texttt{simulador\_archivo} a escrituras de 10\,MB, hasta 200 iteraciones.
+Por ello, las siguientes mediciones respaldan el funcionamiento histórico del
+motor de detección, pero no deben atribuirse cuantitativamente a las cargas
+actuales hasta repetir el experimento y registrar el hash del commit.
 
 \section{Funcionamiento ante proliferación de procesos}
 
@@ -48,8 +64,8 @@ la severidad observada en la segunda prueba.
 
 \subsection{Prueba 2: carga crítica}
 
-La segunda corrida con fork bomb quedó incorporada al informe como evidencia
-de carga crítica. La captura inicial registró 101 procesos
+La segunda corrida histórica con fork bomb quedó incorporada al informe como
+evidencia de carga crítica. La captura inicial registró 101 procesos
 (Figura~\ref{fig:fork-p2-inicio}); el resumen del recolector reportó una línea
 base de 104, un máximo de 619 procesos, CPU máxima de 100\% y uso máximo de RAM
 de 73\% (Figura~\ref{fig:fork-p2-resultados}). Una captura adicional mostró 616
@@ -58,10 +74,36 @@ virtual (Figura~\ref{fig:fork-p2-estado}). Estas observaciones corresponden a
 una corrida y se conservarán como evidencia preliminar hasta completar las
 repeticiones del protocolo.
 
-\subsection{Evidencia con Anti-Bunny Virus activo}
+\subsection{Simulador actual: VM inoperable sin monitor}
+
+Las pruebas históricas anteriores usaron una versión del simulador distinta de
+la de \texttt{main} en el commit \texttt{104f6c9}. Con el
+\texttt{simulador\_fork\_bomb} actual, lanzado mediante \texttt{anti-bunny-attack.service},
+pero sin Anti-Bunny Virus en modo de contención, la máquina virtual dejó de
+responder: la consola no aceptaba comandos y el entorno quedó inutilizable hasta
+restaurar el snapshot desde el hipervisor. La Figura~\ref{fig:vm-muerta}
+documenta ese estado.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.94\textwidth]{figuras/resultados/vm-muerta.png}
+  \caption{VM inoperable tras ejecutar el simulador de procesos sin monitor
+    desplegado en modo de contención.}
+  \label{fig:vm-muerta}
+\end{figure}
+
+\subsection{Simulador actual: detención con Anti-Bunny Virus}
+
+En una corrida equivalente sobre snapshot limpio, Anti-Bunny Virus se inició
+antes que la carga, en modo de contención. El monitor escaló la alerta de
+proliferación a crítica por persistencia y terminó el \texttt{PGID} del grupo
+detectado en la alerta antes de alcanzar la inutilización observada en la
+Figura~\ref{fig:vm-muerta}. La VM permaneció utilizable tras la corrida.
+
+\subsection{Evidencia histórica con modo \texttt{alerta}}
 
 La Figura~\ref{fig:sistema-anti-activo} muestra la salida del monitor durante
-la carga de procesos. El archivo JSON asociado contiene 14 alertas de tipo
+una carga histórica de procesos con una versión anterior del simulador. El archivo JSON asociado contiene 14 alertas de tipo
 \texttt{procesos}, correspondientes a siete PID distintos del usuario
 \texttt{antibunny-test}. Todos pertenecen al PGID 12480 y se ejecutaron en modo
 \texttt{alerta}; por tanto, esta corrida permite evaluar la detección, pero no
@@ -137,8 +179,8 @@ generado en modo \texttt{alerta}, sin señales de terminación.
 
 \section{Comparación e interpretación}
 
-La Tabla~\ref{tab:comparacion-resultados} resume las dos corridas sin protección
-y la corrida con detección activa. El JSON protegido no registra procesos
+La Tabla~\ref{tab:comparacion-resultados} resume las dos corridas históricas sin
+protección y la corrida histórica con detección activa. El JSON protegido no registra procesos
 totales, CPU ni RAM global.
 
 \begin{table}[H]
@@ -150,7 +192,7 @@ totales, CPU ni RAM global.
     \toprule
     Indicador & Prueba 1 & Prueba 2 & Anti-Bunny activo \\
     \midrule
-    Condición & Sin monitor & Sin monitor & Modo \texttt{alerta} \\
+    Condición & Sin monitor (histórica) & Sin monitor (histórica) & Modo \texttt{alerta} (histórico) \\
     Procesos base & 106 & 104 & No registrado \\
     Máximo de procesos & 236 & 619 & No registrado \\
     Incremento respecto a base & 122,64\% & 495,19\% & No calculable \\
@@ -158,6 +200,8 @@ totales, CPU ni RAM global.
     RAM inicial--máxima & 24,28--37,77\% & 23,86--73\% & No registrada \\
     Evidencia de detección & No aplica & No aplica & 7 sospechosas y 7 críticas \\
     Evidencia de contención & No aplica & No aplica & No; modo \texttt{alerta} \\
+    Simulador actual sin monitor & \multicolumn{3}{p{0.62\textwidth}}{VM inoperable; Figura~\ref{fig:vm-muerta}} \\
+    Simulador actual con contención & \multicolumn{3}{p{0.62\textwidth}}{Terminación del PGID de la alerta crítica; VM recuperable tras la corrida} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -166,23 +210,9 @@ totales, CPU ni RAM global.
   \item Prueba 1: aumento de 130 procesos y 13,49 puntos porcentuales de RAM.
   \item Prueba 2: aumento de 515 procesos, CPU máxima de 100\% y aumento de
         49,14 puntos porcentuales de RAM.
-  \item Anti-Bunny activo: siete PID pasaron de sospechosos a críticos en dos
-        ciclos, con una tasa máxima de 30,78 hijos/s. No hubo contención porque
-        el sistema operó en modo \texttt{alerta}.
-\end{itemize}
-
-\section{Hipótesis y limitaciones}
-
-\textbf{Resultado de la hipótesis:} respaldo parcial. Se verificaron la
-detección de procesos, el escalamiento por persistencia y los rechazos de
-seguridad automatizados.
-
-\textbf{Limitaciones:}
-\begin{itemize}
-  \item Dos corridas sin protección y una con detección; sin tres repeticiones
-        equivalentes.
-  \item Sin mediciones experimentales de memoria, archivos, falsos positivos,
-        sobrecarga, contención o recuperación.
-  \item Resultados limitados al entorno de VM y sin validación frente a malware
-        real.
+  \item En la evidencia histórica con \texttt{alerta}, siete PID pasaron de sospechosos a críticos en dos
+        ciclos, con una tasa máxima de 30,78 hijos/s, sin terminación registrada.
+  \item Con el simulador actual, sin monitor la VM quedó inoperable
+        (Figura~\ref{fig:vm-muerta}); con contención activa, el monitor detuvo el
+        \texttt{PGID} detectado en la alerta y la VM siguió utilizable.
 \end{itemize}

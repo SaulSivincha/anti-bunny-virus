@@ -1,14 +1,26 @@
 \chapter{Conclusiones}
 
 \begin{enumerate}
-  \item Sin protección, la corrida crítica alcanzó 619 procesos, 100\% de CPU
-        y 73\% de RAM.
-  \item Anti-Bunny Virus detectó siete PID y escaló sus alertas de sospechosas
-        a críticas tras dos ciclos, con un máximo de 30,78 hijos/s.
-  \item Las pruebas automatizadas confirmaron el rechazo de objetivos no
-        autorizados y de identidades inválidas.
-  \item La hipótesis quedó parcialmente respaldada: se validó la detección,
-        pero no la contención experimental, la recuperación ni la sobrecarga.
+  \item La corrida histórica sin protección alcanzó 619 procesos, 100\% de CPU
+        y 73\% de RAM; su carga no equivale automáticamente al simulador actual.
+  \item El simulador de procesos no es una carga autocontenida: sin monitor
+        desplegado con contención activa agota los recursos hasta dejar la VM
+        inoperable.
+  \item Con el simulador actual, una corrida sin monitor dejó la VM inoperable;
+        con contención activa, Anti-Bunny Virus terminó el \texttt{PGID} de la
+        alerta crítica antes de ese punto.
+  \item El monitor evalúa todos los procesos del sistema: la detección y la
+        contención por proliferación persistente no dependen de un programa
+        concreto ni de un \texttt{PGID} predeclarado.
+  \item En evidencia histórica con \texttt{alerta}, el monitor detectó siete PID y escaló
+        sus alertas de sospechosas a críticas tras dos ciclos, con un máximo de
+        30,78 hijos/s.
+  \item Las pruebas automatizadas confirmaron rechazos ante identidades inválidas
+        y contención del grupo indicado en alertas críticas accionables.
+  \item La hipótesis queda parcialmente respaldada: se validó detección y
+        contención experimental del simulador de procesos actual; faltan
+        repeticiones sistemáticas, memoria, archivos, recuperación cuantificada
+        y sobrecarga.
 \end{enumerate}
 
 \section{Cumplimiento de objetivos}
@@ -22,11 +34,11 @@
     \toprule
     Objetivo & Estado & Evidencia \\
     \midrule
-    General & Parcial & Prototipo implementado y detección de procesos demostrada; faltan pruebas experimentales de memoria, archivos y contención. \\
-    OE1 & Parcial & El sistema recolecta PID, PPID, PGID, CPU, RSS y archivos; la evidencia entregada solo valida procesos. \\
-    OE2 & Parcial & Siete PID escalaron de sospechosos a críticos tras dos ciclos, con máximo de 30,78 hijos/s. \\
-    OE3 & Parcial & Las pruebas automatizadas validaron los rechazos de seguridad; no se registró terminación real de un PGID autorizado. \\
-    OE4 & Parcial & Se documentaron dos corridas sin monitor y una con detección; faltan condiciones equivalentes, tres repeticiones, contención y sobrecarga. \\
+    General & Parcial & Monitor desplegable; detección histórica y contención por PGID de alerta en VM; faltan repeticiones, memoria y archivos. \\
+    OE1 & Parcial & Recolección global de PID, PPID, PGID, CPU, RSS y archivos; evidencia de VM con y sin monitor. \\
+    OE2 & Parcial & Detección general por umbrales; escalamiento a crítica en simulador actual y en evidencia histórica. \\
+    OE3 & Cumplido & Contención del PGID de alertas críticas accionables de proliferación, con pruebas automatizadas de rechazos seguros. \\
+    OE4 & Parcial & Corridas históricas y actuales documentadas; faltan tres repeticiones por condición, sobrecarga y escenarios de memoria/archivo. \\
     \bottomrule
   \end{tabular}
 \end{table}

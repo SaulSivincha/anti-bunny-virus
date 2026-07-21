@@ -1,6 +1,6 @@
 \chapter{Introducción}
 
-\section{Problema y propósito del proyecto}
+\section{Problema, propósito e hipótesis}
 
 El agotamiento de procesos, CPU, memoria o almacenamiento puede degradar un
 sistema Linux hasta impedir su operación y recuperación. Este riesgo puede
@@ -12,30 +12,37 @@ preservar la interactividad frente a cargas extremas de procesos y memoria
 
 En este proyecto, \emph{bunny virus} designa un comportamiento sostenido de
 agotamiento: creación acelerada de procesos, aumento de memoria o crecimiento
-continuo de un archivo. Los cambios de tamaño y otros metadatos permiten
-observar actividad sospechosa en almacenamiento \cite{pennington2003storage},
-pero una monitorización frecuente también introduce un coste dependiente de la
-carga \cite{patil2004i3fs}. Por ello, \emph{anti-bunny-virus} obtiene muestras
-de procesos y recursos desde \texttt{/proc}, vigila un directorio configurado y
-evalúa tasas temporales y persistencia. Cada alerta conserva su evidencia y la
-contención solo puede aplicarse, en laboratorio, a un grupo atribuible y
-autorizado.
+continuo de un archivo. No es una carga autocontenida: el simulador de procesos
+actual invoca \texttt{fork()} en bucles anidados sin límite interno y, sin un
+mecanismo de contención activo, puede agotar la tabla de procesos, la CPU y la
+memoria hasta dejar la máquina inoperable. Los cambios de tamaño y otros
+metadatos permiten observar actividad sospechosa en almacenamiento
+\cite{pennington2003storage}, pero una monitorización frecuente también introduce
+un coste dependiente de la carga \cite{patil2004i3fs}. Por ello,
+\emph{anti-bunny-virus} obtiene muestras de procesos y recursos desde
+\texttt{/proc}, vigila un directorio configurado y evalúa tasas temporales y
+persistencia sobre \emph{todos} los procesos observados. Cualquier proceso,
+recurso o archivo que incumpla las reglas puede generar alerta; ante una alerta
+crítica accionable de proliferación y con el modo de contención activo, el monitor
+termina el grupo de procesos (\texttt{PGID}) indicado en la propia alerta, sin
+depender de un binario concreto ni de una lista previa de grupos permitidos.
+Las exclusiones se limitan a salvaguardas del sistema (por ejemplo, no actuar
+sobre PID o PGID reservados y revalidar identidad en \texttt{/proc}). Cada
+alerta conserva su evidencia. El procedimiento de las pruebas en VM se describe
+en la Sección~\ref{sec:procedimiento-seguridad}.
 
-La pregunta de investigación es: ¿un monitor en C para Linux basado en tasas
-temporales, persistencia y correlación puede detectar tempranamente escenarios
-controlados de agotamiento y contener de forma segura el grupo responsable? La
-evaluación se limita a los simuladores, configuración y máquinas virtuales
-descritos; no pretende demostrar protección general contra malware.
+\textbf{Propósito.} Responder si un monitor en C para Linux, desplegado de forma
+continua, puede detectar tempranamente agotamiento de recursos y contener el
+grupo responsable cuando las reglas de proliferación persistente se incumplan.
+La evaluación experimental usa simuladores y máquinas virtuales para reproducir
+cargas extremas sin poner en riesgo el equipo anfitrión.
 
-\section{Hipótesis}
-
-Se plantea que las tasas temporales y la persistencia permitirán detectar los
-tres simuladores antes de sus límites configurados. Asimismo, la validación de
-identidad y autorización debería permitir contener únicamente el grupo de
-laboratorio, sin alertas críticas durante la línea base. La hipótesis se
-evaluará mediante latencia de alerta y contención, recursos consumidos, falsos
-positivos, recuperación y sobrecarga del monitor, y sus conclusiones se
-restringirán al entorno experimental.
+\textbf{Hipótesis.} Las tasas temporales y la persistencia permitirán detectar
+los tres simuladores antes de que la VM quede inoperable. En modo de contención,
+el monitor podrá terminar el \texttt{PGID} de cualquier proceso que genere una
+alerta crítica accionable por proliferación, sin alertas críticas durante la
+línea base. Se evaluará mediante latencia de alerta y contención, recursos
+consumidos, falsos positivos, recuperación y sobrecarga del monitor.
 
 \clearpage
 
@@ -44,9 +51,9 @@ restringirán al entorno experimental.
 \subsection{Objetivo general}
 
 Diseñar, implementar y evaluar un monitor en C para Linux capaz de detectar
-comportamientos controlados de agotamiento de procesos, memoria y almacenamiento,
-y de aplicar una respuesta trazable y segura sobre un grupo autorizado en un
-entorno de laboratorio.
+agotamiento de procesos, memoria y almacenamiento en el sistema donde está
+desplegado, y de aplicar una respuesta trazable que termine el grupo de
+procesos responsable cuando las reglas de proliferación persistente lo exijan.
 
 \subsection{Objetivos específicos}
 
@@ -59,9 +66,10 @@ entorno de laboratorio.
   persistencia, y registrar para cada alerta las métricas que originaron la
   decisión.
 
-  \item Implementar una política de contención de laboratorio que valide la
-  identidad y autorización del proceso o grupo antes de enviar señales, y que
-  rechace acciones sobre objetivos no autorizados.
+  \item Implementar una política de contención que, ante alertas críticas
+  accionables de proliferación, valide la identidad del proceso en
+  \texttt{/proc} y envíe señales al \texttt{PGID} de la alerta, rechazando
+  únicamente objetivos inválidos o reservados del sistema.
 
   \item Comparar experimentalmente los escenarios sin protección, con detección
   y con contención, midiendo latencia de alerta, consumo de recursos, falsos
