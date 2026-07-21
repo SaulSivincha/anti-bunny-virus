@@ -1,3 +1,7 @@
+/*
+ * Recolector de archivos. Recorre el directorio vigilado, calcula crecimiento
+ * por ruta e intenta asociar el archivo más activo con un descriptor de /proc.
+ */
 #include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
@@ -9,6 +13,7 @@
 
 #define MAX_ESTADOS_ARCHIVO 1024
 
+// El historial mínimo por ruta permite comparar el tamaño entre dos ciclos.
 typedef struct {
     char ruta[PATH_MAX];
     long long tamano;
@@ -51,6 +56,7 @@ static void escanear_directorio(const char *directorio, float intervalo,
         if (snprintf(ruta, sizeof(ruta), "%s/%s", directorio, entrada->d_name) >= (int)sizeof(ruta)) continue;
         if (lstat(ruta, &datos) != 0) continue;
         if (S_ISDIR(datos.st_mode)) {
+            // Continuar el recorrido para incluir subdirectorios.
             escanear_directorio(ruta, intervalo, lista, max_archivos, total);
         } else if (S_ISREG(datos.st_mode)) {
             long long anterior = tamano_anterior(ruta, (long long)datos.st_size);
@@ -61,6 +67,7 @@ static void escanear_directorio(const char *directorio, float intervalo,
             archivo->pid_escritor = -1;
             archivo->pgid_escritor = -1;
             archivo->atribuido = 0;
+            // Solo el aumento de tamaño genera una tasa positiva en MB/s.
             archivo->crecimiento_mb_s = intervalo > 0.0f && archivo->tamano_bytes > anterior
                 ? (float)(archivo->tamano_bytes - anterior) / (1024.0f * 1024.0f * intervalo)
                 : 0.0f;
@@ -77,6 +84,7 @@ void atribuir_archivo(ArchivoInfo *archivo, const ProcesoInfo *procesos, int n_p
         char directorio[PATH_MAX], enlace[PATH_MAX];
         DIR *fds;
         struct dirent *fd;
+        // Cada enlace de fd apunta al archivo que el proceso mantiene abierto.
         snprintf(directorio, sizeof(directorio), "/proc/%d/fd", procesos[i].pid);
         fds = opendir(directorio);
         if (fds == NULL) continue;
@@ -89,6 +97,7 @@ void atribuir_archivo(ArchivoInfo *archivo, const ProcesoInfo *procesos, int n_p
             if (longitud < 0) continue;
             enlace[longitud] = '\0';
             if (strcmp(enlace, archivo->ruta) == 0) {
+                // La primera coincidencia aporta la identidad operativa del escritor.
                 archivo->pid_escritor = procesos[i].pid;
                 archivo->pgid_escritor = procesos[i].pgid;
                 archivo->atribuido = 1;
@@ -104,6 +113,7 @@ int escanear_archivos(const char *directorio, float intervalo,
                       ArchivoInfo *lista, int max_archivos) {
     int total = 0;
     if (directorio == NULL || lista == NULL || max_archivos <= 0) return 0;
+    // Crear el directorio de laboratorio si aún no existe.
     if (mkdir(directorio, 0755) != 0) {
         struct stat datos;
         if (stat(directorio, &datos) != 0 || !S_ISDIR(datos.st_mode)) return 0;

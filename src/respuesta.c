@@ -1,3 +1,7 @@
+/*
+ * Módulo de respuesta. Registra toda alerta y, en el modo de laboratorio,
+ * contiene únicamente el grupo autorizado tras revalidar su identidad actual.
+ */
 #include <errno.h>
 #include <pwd.h>
 #include <signal.h>
@@ -141,6 +145,7 @@ static void refrescar_pgid_autorizado(void) {
         return;
     }
 
+    // El simulador publica su PGID después de crear la sesión aislada.
     if (fgets(linea, sizeof(linea), archivo) != NULL) {
         int pgid = atoi(linea);
 
@@ -261,6 +266,7 @@ static int identidad_actual_valida(
 
     pgid_actual = getpgid(a->pid);
 
+    // Las tres comparaciones evitan actuar sobre un PID reutilizado u otro grupo.
     return
         starttime_actual == a->starttime &&
         pgid_actual == a->pgid &&
@@ -276,6 +282,7 @@ static int puede_actuar(
     const Alerta *a,
     const char **motivo
 ) {
+    // La política falla de forma cerrada ante cualquier dato no autorizado.
     if (!a->accionable) {
         *motivo = "alerta_no_accionable";
         return 0;
@@ -390,6 +397,7 @@ static void terminar_grupo(
      * Primera etapa: SIGTERM
      * -------------------------------------------------------- */
 
+    // El PGID negativo dirige la señal al grupo completo, no solo al padre.
     if (kill(-a->pgid, SIGTERM) != 0) {
 
         int error_signal = errno;
@@ -429,7 +437,7 @@ static void terminar_grupo(
     escribir(archivo, linea);
 
 
-    /* Periodo de gracia para terminación limpia. */
+    /* Dar oportunidad al grupo de finalizar limpiamente antes de escalar. */
 
     sleep((unsigned int)segundos_gracia);
 
