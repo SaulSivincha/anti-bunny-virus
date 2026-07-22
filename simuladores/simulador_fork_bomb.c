@@ -3,16 +3,7 @@
 #include <unistd.h>
 
 int main(void) {
-    const char *autorizacion = getenv("ANTI_BUNNY_AUTH_FILE");
-    if (autorizacion != NULL) {
-        FILE *archivo = fopen(autorizacion, "w");
-        if (archivo != NULL) {
-            fprintf(archivo, "%d\n", (int)getpgrp());
-            fclose(archivo);
-        }
-    }
-
-    printf("Simulador activo - PGID=%d\n", (int)getpgrp());
+    printf("Simulador de Fork Bomb iniciado (PGID=%d)...\n", (int)getpgrp());
     fflush(stdout);
 
     while (1) {
